@@ -24,6 +24,30 @@ function getItemName(itemId, eraId) {
     if (!eraId) eraId = 'rebirth';
     return (ECONOMY_ITEMS[itemId] && ECONOMY_ITEMS[itemId].names) ? (ECONOMY_ITEMS[itemId].names[eraId] || ECONOMY_ITEMS[itemId].names['rebirth']) : (ECONOMY_ITEMS[itemId]?.name || itemId);
 }
+function getGoodName(good) {
+    // Простая функция для получения названия товара в новостях
+    const goodNames = {
+        'bread': 'хлеб',
+        'meat': 'мясо',
+        'wheat': 'пшеница',
+        'fish': 'рыба',
+        'wood': 'древесина',
+        'stone': 'камень',
+        'iron_ore': 'железная руда',
+        'gold_ore': 'золотая руда',
+        'iron': 'железо',
+        'weapons': 'оружие',
+        'armor': 'броня',
+        'herbs': 'травы',
+        'potion': 'зелья',
+        'clothes': 'одежда',
+        'cotton': 'хлопок',
+        'smoked_meat': 'копчености',
+        'ale': 'эль',
+        'tools': 'инструменты'
+    };
+    return goodNames[good] || good;
+}
 function getFacilityName(facId, eraId) {
     if (!eraId) eraId = 'rebirth';
     return (FACILITY_NAMES[facId] && FACILITY_NAMES[facId][eraId]) ? FACILITY_NAMES[facId][eraId] : facId;
@@ -690,13 +714,22 @@ function simulateOneHour() {
             if (caravan.hoursLeft <= 0) {
                 let destRegion = World.regions[caravan.destination];
                 if (destRegion) {
+                    let totalRevenue = 0;
                     for (let good in caravan.goods) {
                         let amount = caravan.goods[good];
                         if (!destRegion.resources[good]) destRegion.resources[good] = { amount: 0, quality: 1.0, batches: [] };
                         destRegion.resources[good].amount += amount;
                         let revenue = amount * (destRegion.markets[good] || 1);
+                        totalRevenue += revenue;
                         destRegion.moneySupply = Math.max(0, destRegion.moneySupply - revenue);
                     }
+                    
+                    // НОВОСТЬ: Прибытие каравана
+                    let goodsList = Object.entries(caravan.goods).map(([g, a]) => `${a} ${getGoodName(g)}`).join(', ');
+                    generateWorldNews(
+                        `ЭКОНОМИКА: Караван из ${region.name} прибыл в ${destRegion.name}! Доставлено: ${goodsList}. Выручка: ${Math.floor(totalRevenue)} золотых.`,
+                        destRegion.name, 2, 'trade'
+                    );
                 }
                 region.caravans.splice(i, 1);
             }
@@ -1018,6 +1051,14 @@ function simulateOneDay() {
                         goodsBatches: { [good]: extractedBatches },
                         buyPrice: localPrice, investment: cost, hoursLeft: 24 + Math.floor(Math.random() * 48)
                     });
+                    
+                    // НОВОСТЬ: Отправка каравана (только для значимых партий)
+                    if (amount >= 100 && Math.random() < 0.4) {
+                        generateWorldNews(
+                            `ЭКОНОМИКА: Из ${r.name} в ${destRegion.name} отправлен караван с ${amount} ед. ${getGoodName(good)}. Ожидаемая прибыль: ${Math.floor(amount * (destRegion.markets[good] - localPrice))} золотых.`,
+                            rId, 2, 'trade'
+                        );
+                    }
                 }
             }
         }
@@ -1025,6 +1066,31 @@ function simulateOneDay() {
 
     // === 5. ГЕОПОЛИТИКА: ПРИЧИННО-СЛЕДСТВЕННАЯ ДИПЛОМАТИЯ ===
     let fKeys = Object.keys(World.factions);
+    
+    // === НОВОСТИ: Изменения цен на рынках (значимые скачки) ===
+    for (let rId of rKeys) {
+        let r = World.regions[rId];
+        if (!r.prevMarketPrices) r.prevMarketPrices = {};
+        
+        for (let good in ECONOMY_ITEMS) {
+            let currentPrice = r.markets[good] || 1;
+            let prevPrice = r.prevMarketPrices[good] || currentPrice;
+            
+            // Если цена изменилась более чем на 30% - это новость
+            if (prevPrice > 0 && Math.abs(currentPrice - prevPrice) / prevPrice > 0.3) {
+                let trend = currentPrice > prevPrice ? 'выросли' : 'упали';
+                let changePercent = Math.floor(Math.abs(currentPrice - prevPrice) / prevPrice * 100);
+                
+                if (Math.random() < 0.25) { // Шанс новости 25% чтобы не спамить
+                    generateWorldNews(
+                        `ЭКОНОМИКА: Цены на ${getGoodName(good)} в ${r.name} ${trend} на ${changePercent}% (${prevPrice}→${currentPrice}).`,
+                        rId, 1, 'trade'
+                    );
+                }
+            }
+            r.prevMarketPrices[good] = currentPrice;
+        }
+    }
     
     // Подсчет глобальных ресурсов фракций для логики
     for (let fId of fKeys) {
@@ -1298,6 +1364,78 @@ function syncWorldWithPlayer() {
         if (player.location.toLowerCase().includes(World.regions[rId].name.toLowerCase())) {
             playerRegion = rId;
             break;
+        }
+    }
+
+    // === ГЕНЕРАЦИЯ РЫНОЧНЫХ ПРЕДЛОЖЕНИЙ ОТ NPC ДЛЯ ИГРОКА ===
+    if (playerRegion && World.regions[playerRegion]) {
+        let region = World.regions[playerRegion];
+        
+        // Очищаем старые предложения и генерируем новые каждый день
+        player.marketOffers = [];
+        
+        // Находим NPC-торговцев в регионе
+        let tradersInRegion = Object.values(World.npcs).filter(npc => 
+            npc.currentLocation === playerRegion && 
+            npc.isAlive && 
+            ['merchant', 'trader', 'peddler', 'торговец', 'купец'].includes(npc.profession?.toLowerCase())
+        );
+        
+        // Если нет торговцев, создаем виртуальные предложения от "местных торговцев"
+        if (tradersInRegion.length === 0) {
+            // Генерируем 3-5 случайных предложений на основе ресурсов региона
+            let numOffers = 3 + Math.floor(Math.random() * 3);
+            let availableGoods = Object.keys(region.markets).filter(g => ECONOMY_ITEMS[g]);
+            
+            for (let i = 0; i < numOffers && availableGoods.length > 0; i++) {
+                let good = availableGoods[Math.floor(Math.random() * availableGoods.length)];
+                let basePrice = region.markets[good] || 1;
+                
+                // Цена для игрока: немного выше базовой (торговая наценка)
+                let sellPrice = Math.floor(basePrice * (1.1 + Math.random() * 0.3)); // +10-40%
+                let buyPrice = Math.floor(basePrice * (0.7 + Math.random() * 0.2)); // -30-10%
+                
+                // Количество товара зависит от ресурсов региона
+                let maxAvailable = region.resources[good]?.amount || 0;
+                let quantity = Math.min(10 + Math.floor(Math.random() * 20), Math.floor(maxAvailable * 0.1) || 10);
+                if (quantity < 1) quantity = 1;
+                
+                player.marketOffers.push({
+                    id: `offer_${good}_${Date.now()}_${i}`,
+                    type: Math.random() > 0.5 ? 'sell' : 'buy',
+                    good: good,
+                    goodName: getItemName(good, player.era),
+                    quantity: quantity,
+                    price: sellPrice,
+                    seller: `Торговец из ${region.name}`,
+                    expiresAt: (player.gameTime?.day || 0) + 1 // Действует до конца дня
+                });
+            }
+        } else {
+            // Генерируем предложения от реальных NPC-торговцев
+            for (let trader of tradersInRegion.slice(0, 5)) { // Максимум 5 торговцев
+                // Проверяем инвентарь торговца
+                let traderItems = WorkerInventorySystem.getItemsByContainerId(trader.inventory_id);
+                
+                if (traderItems && traderItems.length > 0) {
+                    for (let item of traderItems.slice(0, 3)) { // До 3 товаров от каждого
+                        let basePrice = region.markets[item.item_id] || 5;
+                        let sellPrice = Math.floor(basePrice * (1.1 + Math.random() * 0.3));
+                        
+                        player.marketOffers.push({
+                            id: `offer_${item.id}_${Date.now()}`,
+                            type: 'sell',
+                            good: item.item_id,
+                            goodName: item.meta?.name || getItemName(item.item_id, player.era),
+                            quantity: item.quantity,
+                            price: sellPrice,
+                            seller: trader.name,
+                            sellerNpcId: trader.aiIdentifier,
+                            expiresAt: (player.gameTime?.day || 0) + 1
+                        });
+                    }
+                }
+            }
         }
     }
 
