@@ -5894,6 +5894,16 @@ function updateEnvironmentPanel() {
             li.addEventListener('mouseover', showEntityTooltip);
             li.addEventListener('mouseout', hideEntityTooltip);
             li.addEventListener('mousemove', moveEntityTooltip);
+            
+            // === ДОБАВЛЕНО: Клик по торговцу открывает рынок ===
+            if (entity.type === 'npc' && entity.traits && 
+                ['merchant', 'trader', 'peddler', 'торговец', 'купец'].some(t => 
+                    entity.traits.some(trait => trait.toLowerCase().includes(t))
+                )) {
+                li.style.cursor = 'pointer';
+                li.addEventListener('click', () => openMarketInterface(entity));
+                li.title = "Нажмите чтобы открыть торговлю";
+            }
 
             environmentList.appendChild(li);
         });
