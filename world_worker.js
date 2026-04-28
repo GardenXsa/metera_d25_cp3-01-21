@@ -1522,8 +1522,8 @@ function processRulerDiplomacy() {
         let wealth = faction.resources.gold.amount;
         let power = faction.resources.manpower.amount;
 
-        // УМНЫЙ ИИ ФРАКЦИЙ: Принимают решения редко, но метко (2% шанс в день)
-        if (Math.random() < 0.02) { 
+        // УМНЫЙ ИИ ФРАКЦИЙ: Принимают решения чаще (15% шанс в день вместо 2%)
+        if (Math.random() < 0.15) { 
             let targetF = fKeys[Math.floor(Math.random() * fKeys.length)];
             if (targetF === ruler.factionId) continue;
             let targetFaction = World.factions[targetF];
@@ -1555,25 +1555,42 @@ function processRulerDiplomacy() {
                     }
                 }
             } 
-            // 3. ИНТРИГИ (Только против равных или более сильных)
-            else if (ruler.personality.paranoia > 60 && targetPower >= power) {
+            // 3. ИНТРИГИ (Только против равных или более сильных) - УВЕЛИЧЕН ШАНС
+            else if (ruler.personality.paranoia > 55 && targetPower >= power * 0.8) {
                 let intrigueTypes = ["sabotage", "bribery"];
                 if (ruler.personality.cruelty > 70) intrigueTypes.push("assassination");
+                if (ruler.personality.ambition > 60) intrigueTypes.push("rebellion");
                 let selectedType = intrigueTypes[Math.floor(Math.random() * intrigueTypes.length)];
                 ruler.currentGoal = { type: "start_intrigue", targetFactionId: targetF };
                 World.intrigues.push({
                     id: "intr_" + Date.now() + Math.floor(Math.random()*1000),
                     type: selectedType, initiatorFactionId: ruler.factionId, targetFactionId: targetF,
                     targetRulerId: targetFaction.rulerId,
-                    progress: 0, requiredProgress: 150, 
-                    progressPerDay: Math.max(1, Math.floor(ruler.personality.paranoia / 20)),
+                    progress: 0, requiredProgress: selectedType === 'rebellion' ? 120 : 60, 
+                    progressPerDay: Math.max(1, Math.floor(ruler.personality.paranoia / 15)),
                     discoveryChance: 3, isDiscovered: false, actors: [], gmInitiated: false, startDay: player?.stats?.turnCount || 0
                 });
+                generateWorldNews(`ИНТРИГА: ${ruler.name} запускает тайную операцию (${selectedType}) против ${targetFaction.name}!`, "global", 3, 'war');
             } 
             // 4. ЭКОНОМИКА И СОЮЗЫ
             else if (ruler.personality.stewardship > 50 && wealth < 10000) {
                 ruler.currentGoal = { type: "trade_pact", targetFactionId: targetF };
                 faction.relations[targetF] += 10;
+                faction.resources.gold.amount += 2000;
+                generateWorldNews(`ЭКОНОМИКА: ${ruler.name} заключает выгодное торговое соглашение с ${targetFaction.name}.`, "global", 2, 'misc');
+            }
+            // 5. ДИПЛОМАТИЯ И БРАКИ
+            else if (ruler.personality.diplomacy > 55 && faction.relations[targetF] > 50) {
+                if (ruler.heir && World.rulers[targetFaction.rulerId]?.heir && Math.random() < 0.4) {
+                    ruler.currentGoal = { type: "marriage_alliance", targetFactionId: targetF };
+                    faction.relations[targetF] = 100;
+                    targetFaction.relations[ruler.factionId] = 100;
+                    generateWorldNews(`ДИНАСТИЧЕСКИЙ БРАК: Дома ${faction.name} и ${targetFaction.name} объединились узами брака!`, "global", 5, 'misc');
+                } else {
+                    ruler.currentGoal = { type: "offer_alliance", targetFactionId: targetF };
+                    faction.relations[targetF] = Math.min(100, faction.relations[targetF] + 20);
+                    generateWorldNews(`ДИПЛОМАТИЯ: ${ruler.name} укрепляет союз с ${targetFaction.name}.`, "global", 2, 'misc');
+                }
             }
         }
     }
