@@ -2,6 +2,161 @@ const { app, BrowserWindow, ipcMain, protocol } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
+const { spawn } = require('child_process');
+
+const USER_DATA = app.getPath('userData');
+const SAVES_DIR = path.join(USER_DATA, 'saves');
+const SETTINGS_FILE = path.join(USER_DATA, 'settings.json');
+
+if (!fs.existsSync(SAVES_DIR)) fs.mkdirSync(SAVES_DIR, { recursive: true });
+
+const PORT = 30007; 
+
+// ============================================================================
+// NEXUS ENGINE PROCESS MANAGEMENT
+// ============================================================================
+
+let engineProcess = null;
+let engineReady = false;
+let commandQueue = [];
+let currentResolve = null;
+
+function getEnginePath() {
+    const exeName = process.platform === 'win32' ? 'meterea_engine.exe' : 'meterea_engine';
+    if (app.isPackaged) {
+        return path.join(process.resourcesPath, 'engine', exeName);
+    } else {
+        return path.join(__dirname, 'engine', exeName);
+    }
+}
+
+function startEngine() {
+    return new Promise((resolve, reject) => {
+        const enginePath = getEnginePath();
+        console.log(`[Nexus] Запуск движка: ${enginePath}`);
+        
+        if (!fs.existsSync(enginePath)) {
+            const errorMsg = `Движок не найден: ${enginePath}. Скомпилируйте его в папке engine/`;
+            console.error(`[Nexus Error] ${errorMsg}`);
+            resolve({ status: 'error', message: errorMsg });
+            return;
+        }
+
+        engineProcess = spawn(enginePath, [], {
+            stdio: ['pipe', 'pipe', 'pipe'],
+            windowsHide: true
+        });
+
+        let stdoutBuffer = '';
+
+        engineProcess.stdout.on('data', (data) => {
+            stdoutBuffer += data.toString();
+            
+            // Обрабатываем полные JSON сообщения (разделенные \n)
+            const lines = stdoutBuffer.split('\n');
+            stdoutBuffer = lines.pop() || ''; // Оставляем неполную строку в буфере
+
+            for (const line of lines) {
+                if (!line.trim()) continue;
+                try {
+                    const response = JSON.parse(line);
+                    if (currentResolve) {
+                        const resolve = currentResolve;
+                        currentResolve = null;
+                        resolve(response);
+                        processQueue();
+                    }
+                } catch (e) {
+                    console.error('[Nexus Parse Error]', e, line);
+                }
+            }
+        });
+
+        engineProcess.stderr.on('data', (data) => {
+            console.error('[Nexus Stderr]', data.toString());
+        });
+
+        engineProcess.on('close', (code) => {
+            console.log(`[Nexus] Движок завершен с кодом ${code}`);
+            engineProcess = null;
+            engineReady = false;
+        });
+
+        engineProcess.on('error', (err) => {
+            console.error('[Nexus Error]', err);
+            reject(err);
+        });
+
+        // Ждем немного чтобы процесс успел стартовать
+        setTimeout(() => {
+            engineReady = true;
+            resolve({ status: 'ok', message: 'Engine started' });
+        }, 500);
+    });
+}
+
+function sendCommand(command, params = {}) {
+    return new Promise((resolve, reject) => {
+        if (!engineProcess || !engineReady) {
+            resolve({ status: 'error', message: 'Engine not ready' });
+            return;
+        }
+
+        const message = JSON.stringify({ command, ...params }) + '\n';
+        commandQueue.push({ message, resolve, reject });
+        processQueue();
+    });
+}
+
+function processQueue() {
+    if (commandQueue.length === 0 || currentResolve !== null) return;
+    
+    const cmd = commandQueue.shift();
+    currentResolve = cmd.resolve;
+    
+    try {
+        engineProcess.stdin.write(cmd.message);
+    } catch (e) {
+        currentResolve = null;
+        cmd.reject(e);
+        processQueue();
+    }
+}
+
+async function initEngine() {
+    if (!engineProcess) {
+        await startEngine();
+    }
+    return await sendCommand('init');
+}
+
+async function buildWorld(playerId) {
+    return await sendCommand('buildWorld', { player_id: playerId });
+}
+
+async function simulateTicks(world, ticks) {
+    return await sendCommand('simulateTicks', { world, ticks });
+}
+
+// ============================================================================
+// IPC HANDLERS FOR NEXUS ENGINE
+// ============================================================================
+
+ipcMain.handle('nexus-init', async () => {
+    return await initEngine();
+});
+
+ipcMain.handle('nexus-build-world', async (event, playerId) => {
+    return await buildWorld(playerId);
+});
+
+ipcMain.handle('nexus-simulate', async (event, world, ticks) => {
+    return await simulateTicks(world, ticks);
+});
+
+// ============================================================================
+// EXISTING CODE...
+// ============================================================================
 
 const USER_DATA = app.getPath('userData');
 const SAVES_DIR = path.join(USER_DATA, 'saves');
