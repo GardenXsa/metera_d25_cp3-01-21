@@ -1,0 +1,28 @@
+// --- Глобальные переменные ---
+let settingsReturnScreen = 'main-menu'; // Экран для возврата из настроек
+
+let recognition;
+let isRecognizing = false;
+
+let narrators = [];
+let currentNarratorIndex = 0;
+let tempPlayer = null; // Для временного хранения персонажа
+let directoryHandle = null;
+let lastFSAErrorTime = 0; // Для предотвращения спама alert'ами
+const FSA_ERROR_COOLDOWN = 10000; // 10 секунд
+
+
+
+let itemsReferenceData = null; // Will store the array of item objects
+let gmFeedbackMessages = [];
+let playerActionQueue = []; // <-- [НОВАЯ ПЕРЕМЕННАЯ] Будет хранить действия игрока
+let turnRollMemory = {}; // Античит: запоминает броски в текущем ходу
+let nextInternalItemId = 1;
+let itemTooltipElement = null; // Для кастомных DnD тултипов
+let nextInternalEntityId = 1;
+let nextInternalSkillId = 1;
+let nextInternalMapMarkerId = 1;
+let draggedItemData = null;
+let combatSystemRulesData = "Загрузка правил...";
+const BUILT_IN_KEY_STORAGE_FLAG = 'useBuiltInApiKey_v1';
+

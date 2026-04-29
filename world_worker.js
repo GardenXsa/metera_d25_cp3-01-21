@@ -42,7 +42,7 @@ function consumeRealItems(containerId, prototypeId, quantity) {
         if (!item || item.prototype_id !== prototypeId) continue;
         const take = Math.min(item.stack_size, remaining);
         if (take > 0) {
-            CoreInventorySystem.removeItem(itemId, take);
+            WorkerInventorySystem.removeItem(itemId, take);
             remaining -= take;
             taken += take;
         }
@@ -53,15 +53,25 @@ function consumeRealItems(containerId, prototypeId, quantity) {
 
 // Создаёт предметы в контейнере. Возвращает массив созданных ID.
 function addRealItems(containerId, prototypeId, quantity, customProps = {}) {
-    const createdIds = [];
-    for (let i = 0; i < quantity; i++) {
-        const id = WorkerInventorySystem.createItem(prototypeId, 1, containerId, {
+    if (quantity <= 0) return [];
+    const cont = ContainerRegistry.get(containerId);
+    if (!cont) return [];
+    
+    let existingItemId = cont.items.find(id => {
+        let it = ItemRegistry.get(id);
+        return it && it.prototype_id === prototypeId;
+    });
+    
+    if (existingItemId) {
+        ItemRegistry.get(existingItemId).stack_size += quantity;
+        return [existingItemId];
+    } else {
+        const id = WorkerInventorySystem.createItem(prototypeId, quantity, containerId, {
             ...customProps,
             name: getItemName(prototypeId, player?.era)
         });
-        createdIds.push(id);
+        return [id];
     }
-    return createdIds;
 }
 
 // Оценивает доступную живую силу фракции на основе оружия и еды
@@ -187,8 +197,44 @@ const WorkerInventorySystem = {
         ItemRegistry.set(id, item);
         if (containerId && ContainerRegistry.has(containerId)) ContainerRegistry.get(containerId).items.push(id);
         return id;
+    },
+    removeItem: function(itemId, quantity) {
+        if (!ItemRegistry.has(itemId)) return false;
+        const item = ItemRegistry.get(itemId);
+        if (item.stack_size <= quantity) {
+            if (item.container_id && ContainerRegistry.has(item.container_id)) {
+                const cont = ContainerRegistry.get(item.container_id);
+                if (cont) cont.items = cont.items.filter(id => id !== itemId);
+            }
+            ItemRegistry.delete(itemId);
+        } else {
+            item.stack_size -= quantity;
+        }
+        return true;
+    },
+    moveItem: function(itemId, targetContainerId) {
+        const item = ItemRegistry.get(itemId);
+        const targetCont = ContainerRegistry.get(targetContainerId);
+        if (!item || !targetCont) return false;
+        if (item.container_id && ContainerRegistry.has(item.container_id)) {
+            const sourceCont = ContainerRegistry.get(item.container_id);
+            if (sourceCont) sourceCont.items = sourceCont.items.filter(id => id !== itemId);
+        }
+        targetCont.items.push(itemId);
+        item.container_id = targetContainerId;
+        return true;
+    },
+    getItemsByContainerId: function(containerId) {
+        const cont = ContainerRegistry.get(containerId);
+        if (!cont) return [];
+        return cont.items.map(id => ItemRegistry.get(id)).filter(Boolean).map(item => ({
+            id: item.id,
+            item_id: item.prototype_id,
+            quantity: item.stack_size,
+            meta: item.custom_props
+        }));
     }
-};
+};;
 
 // Функции синхронизации удалены - теперь используются только физические предметы
 // Все ресурсы хранятся исключительно в контейнерах как физические items
@@ -734,7 +780,7 @@ function simulateOneHour() {
                             const item = ItemRegistry.get(itemId);
                             if (!item) continue;
                             // Перемещаем предмет в новый контейнер
-                            CoreInventorySystem.moveItem(itemId, destRegion.vault_id);
+                            WorkerInventorySystem.moveItem(itemId, destRegion.vault_id);
                             const revenue = item.stack_size * (destRegion.markets[item.prototype_id] || 1);
                             totalRevenue += revenue;
                         }
@@ -756,7 +802,7 @@ function simulateOneHour() {
 
 function simulateOneDay() {
     if (!IS_PRE_SIMULATING) console.log("[WorldSim] Симуляция нового дня (Глубокая причинно-следственная связь)...");
-    if (World) World.needsGlobalEvent = true;
+    if (World && !IS_PRE_SIMULATING) World.needsGlobalEvent = true;
 
     // --- ГОМЕОСТАЗ МИРА (Адаптивные переменные) ---
     if (World && !World.homeostasis) World.homeostasis = { warWeariness: 0, fertility: 1.0 };
@@ -1461,7 +1507,7 @@ function simulateOneDay() {
                             if (targetChest && capitalChest) {
                                 // Перемещаем каждый предмет
                                 for (const itemId of [...targetChest.items]) {
-                                    CoreInventorySystem.moveItem(itemId, capitalChest.id);
+                                    WorkerInventorySystem.moveItem(itemId, capitalChest.id);
                                 }
                             }
                         }
@@ -1741,11 +1787,9 @@ async function runWorldSimulationTick() {
 self.onmessage = async function(e) {
     const data = e.data;
     if (data.items) {
-        ItemRegistry.clear();
         data.items.forEach(([k, v]) => ItemRegistry.set(k, v));
     }
     if (data.containers) {
-        ContainerRegistry.clear();
         data.containers.forEach(([k, v]) => ContainerRegistry.set(k, v));
     }
     
@@ -1755,7 +1799,7 @@ self.onmessage = async function(e) {
         FACILITY_NAMES = data.FACILITY_NAMES;
         self.postMessage({ type: 'INIT_DONE' });
     } 
-        else if (data.action === 'buildWorld') {
+    else if (data.action === 'buildWorld') {
         player = data.player;
         globalLocations = data.globalLocations;
         TARGET_AGENT_COUNT = data.initialAgents || 100;
@@ -1792,8 +1836,7 @@ self.onmessage = async function(e) {
             containers: Array.from(ContainerRegistry.entries())
         });
     }
-    
-};
+};;
 
 
 /* DUPLICATE BLOCK REMOVED */

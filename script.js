@@ -126,6 +126,62 @@ function syncPlayerGoldFromInventory() {
     return totalGold;
 }
 
+function countRealItems(containerId, prototypeId) {
+    const cont = ContainerRegistry.get(containerId);
+    if (!cont) return 0;
+    return cont.items.reduce((sum, itemId) => {
+        const item = ItemRegistry.get(itemId);
+        return (item && item.prototype_id === prototypeId) ? sum + item.stack_size : sum;
+    }, 0);
+}
+
+function consumeRealItems(containerId, prototypeId, quantity) {
+    const cont = ContainerRegistry.get(containerId);
+    if (!cont) return 0;
+    let remaining = quantity;
+    let taken = 0;
+    for (const itemId of [...cont.items]) {
+        const item = ItemRegistry.get(itemId);
+        if (!item || item.prototype_id !== prototypeId) continue;
+        const take = Math.min(item.stack_size, remaining);
+        if (take > 0) {
+            CoreInventorySystem.removeItem(itemId, take);
+            remaining -= take;
+            taken += take;
+        }
+        if (remaining <= 0) break;
+    }
+    return taken;
+}
+
+function addRealItems(containerId, prototypeId, quantity, customProps = {}) {
+    const createdIds = [];
+    for (let i = 0; i < quantity; i++) {
+        const id = CoreInventorySystem.createItem(prototypeId, 1, containerId, {
+            ...customProps,
+            name: getItemName(prototypeId, player?.era)
+        });
+        createdIds.push(id);
+    }
+    return createdIds;
+}
+
+function availableManpower(faction) {
+    if (!faction || typeof World === 'undefined' || !World) return 0;
+    let total = 0;
+    for (let rid of faction.regions || []) {
+        const region = World.regions[rid];
+        if (!region || !region.vault_id) continue;
+        const weapons = countRealItems(region.vault_id, 'weapons');
+        const food = countRealItems(region.vault_id, 'bread') + countRealItems(region.vault_id, 'meat') + countRealItems(region.vault_id, 'smoked_meat');
+        const population = region.population || 0;
+        const possibleSoldiers = Math.min(Math.floor(population * 0.1), weapons);
+        if (food < possibleSoldiers * 0.5) continue;
+        total += possibleSoldiers;
+    }
+    return Math.floor(total);
+}
+
 const OwnershipService = {
     canAccess: function(actorId, containerId, options = {}) {
         const resolvedId = resolveSpecialContainerId(containerId);
@@ -901,11 +957,9 @@ worldWorker.onmessage = function(e) {
     const data = e.data;
     
     if (data.items) {
-        ItemRegistry.clear();
         data.items.forEach(([k, v]) => ItemRegistry.set(k, v));
     }
     if (data.containers) {
-        ContainerRegistry.clear();
         data.containers.forEach(([k, v]) => ContainerRegistry.set(k, v));
     }
     if (player) {
@@ -932,11 +986,8 @@ worldWorker.onmessage = function(e) {
         const loadingText = document.getElementById('loading-text');
         if (loadingText) loadingText.textContent = 'Генерация мира завершена...';
         
-        // ПРИНУДИТЕЛЬНО ОБНОВЛЯЕМ ИНТЕРФЕЙС ПОСЛЕ ТОГО КАК ВОРКЕР ВЕРНУЛ ИСТОРИЮ
         updateWorldChroniclesDisplay();
         updateTradeJournalDisplay();
-        
-        // Продолжаем логику старта игры (вызывается извне)
         document.dispatchEvent(new Event('PreSimulateComplete'));
     }
     else if (data.type === 'WORLD_UPDATED') {
@@ -957,8 +1008,7 @@ worldWorker.onmessage = function(e) {
             if (sendButton) sendButton.disabled = false;
         }
     }
-    
-};
+};;
 
 async function initWorldSimulator(initialAgents = 100) {
     worldWorker.postMessage({ action: 'init', ECONOMY_ITEMS, CRAFTING_RECIPES, FACILITY_NAMES });
@@ -4451,6 +4501,7 @@ async function finalizeWorldSetupAndStart() {
     console.log("Игра начинается с персонажем:", player);
 
     initializeGameInterface();
+    setActiveScreen('game-interface');
     showLoadingScreen('loadingScreen.generatingWorld', 'Генерация мира...');
 
     World = await initWorldSimulator(initialAgents);
@@ -9144,6 +9195,10 @@ case 'setEntityBinding':
             case 'equipItem':
                 if (args.aiIdentifier) {
                     const backpack = ContainerRegistry.get(player.container_backpack);
+                    if (!backpack) {
+                        feedback = `[ERROR] Рюкзак игрока не найден в реестре.`;
+                        break;
+                    }
                     const itemKey = backpack.items.find(id => {
                         let it = ItemRegistry.get(id);
                         return it && it.prototype_id === args.aiIdentifier;
@@ -11389,14 +11444,12 @@ function updateWorldSimDebugDisplay() {
             for (let t in f.diplomacy) { if (f.diplomacy[t] === "war" && World.factions[t]) wars.push(World.factions[t].name); }
             let warText = wars.length > 0 ? `<br><span style="color:#e74c3c; font-size:0.85em;">⚔️ Война: ${wars.join(', ')}</span>` : '';
             
-            // Функция для красивого форматирования больших чисел
             const formatNum = (num) => {
                 if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
                 if (num >= 1000) return (num / 1000).toFixed(1) + 'k';
                 return num;
             };
 
-            // Золото и живая сила из физических запасов
             const capitalRegionId = Object.keys(World.regions).find(rid => World.regions[rid].owner === fId);
             let gold = 0;
             if (capitalRegionId && World.regions[capitalRegionId]?.vault_id) {
@@ -11451,10 +11504,20 @@ function updateWorldSimDebugDisplay() {
             }
             let empRate = Math.floor(Math.min(1.0, totalJobs / (totalWorkforce || 1)) * 100);
 
-            let resHtml = Object.keys(r.resources).filter(k => r.resources[k].amount > 0).map(k => {
-                let name = getItemName(k, player ? player.era : 'rebirth');
-                return `<span style="display:inline-block; margin-right: 8px; color:#bdc3c7;">${name}: <b style="color:#f1c40f">${Math.floor(r.resources[k].amount)}</b></span>`;
-            }).join('');
+            let resHtml = '';
+            if (r.vault_id) {
+                let vaultItems = [];
+                for (let k in ECONOMY_ITEMS) {
+                    let amount = countRealItems(r.vault_id, k);
+                    if (amount > 0) {
+                        let name = getItemName(k, player ? player.era : 'rebirth');
+                        vaultItems.push(`<span style="display:inline-block; margin-right: 8px; color:#bdc3c7;">${name}: <b style="color:#f1c40f">${amount}</b></span>`);
+                    }
+                }
+                resHtml = vaultItems.join('');
+            } else {
+                resHtml = '<span style="color:#e74c3c;">Склад не найден</span>';
+            }
 
             html += `<div class="debug-item">
                      <b style="color:#2ecc71">${r.name}</b><br>
@@ -11466,30 +11529,6 @@ function updateWorldSimDebugDisplay() {
                      </div>`;
         }
         html += '</div></div>';
-
-                // 4. ПРАВИТЕЛИ И ИНТРИГИ
-        html += '<div class="debug-card"><div class="debug-card-title"><span>👑 ПРАВИТЕЛИ И ИНТРИГИ</span></div><div class="debug-grid">';
-        if(World.rulers) {
-            for(let rId in World.rulers) {
-                let r = World.rulers[rId];
-                if(!r.alive || r.id.includes("_heir")) continue;
-                let goal = r.gmOverride ? `<b style="color:#e74c3c">[GM] ${r.gmOverride}</b>` : (r.currentGoal ? `${r.currentGoal.type} -> ${r.currentGoal.targetFactionId}` : "Нет цели");
-                html += `<div class="debug-item">
-                         <b style="color:#9b59b6">${r.name}</b> (${World.factions[r.factionId]?.name || r.factionId})<br>
-                         HP: ${r.health}% | Амбиции: ${r.personality.ambition}<br>
-                         Цель: ${goal}
-                         </div>`;
-            }
-        }
-        html += '</div>';
-        if(World.intrigues && World.intrigues.length > 0) {
-            html += '<div style="margin-top:10px; border-top:1px dashed #555; padding-top:5px;"><b>Активные заговоры:</b><br>';
-            World.intrigues.forEach(i => {
-                html += `<span style="color:${i.isDiscovered ? '#e74c3c' : '#f39c12'}">[${i.type}]</span> ${i.initiatorFactionId} -> ${i.targetFactionId} (Прогресс: ${Math.floor(i.progress)}/${i.requiredProgress})<br>`;
-            });
-            html += '</div>';
-        }
-        html += '</div>';
 
         // 4. ПРАВИТЕЛИ И ИНТРИГИ
         html += '<div class="debug-card"><div class="debug-card-title"><span>👑 ПРАВИТЕЛИ И ИНТРИГИ</span></div><div class="debug-grid">';
@@ -11515,7 +11554,7 @@ function updateWorldSimDebugDisplay() {
         }
         html += '</div>';
 
-content.innerHTML = html;
+        content.innerHTML = html;
     } else {
         panel.style.display = 'none';
     }

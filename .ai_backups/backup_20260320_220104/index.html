@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title data-i18n="appName">Хроники Метерии: AI Приключение</title>
+    
+    <!-- Шрифты для атмосферы -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400..700;1,400..700&family=MedievalSharp&display=swap" rel="stylesheet">
+    
+    <link rel="stylesheet" href="style.css">
+    <!-- Font Awesome для иконок -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.6/purify.min.js"></script>
+    
+</head>
+<body>
+    <!-- ГРАФИЧЕСКИЕ ЭФФЕКТЫ -->
+    <div class="vignette"></div>
+    <div class="film-grain"></div>
+    <div class="universal-particles"></div>
+        <!-- Генератор динамического фрактального тумана -->
+    <div class="fog-wrapper">
+        <div class="fog-base"></div>
+        <div class="fog-extra"></div>
+    </div>
+    <svg style="display:none">
+        <filter id="fog-filter">
+            <feTurbulence type="fractalNoise" baseFrequency="0.012" numOctaves="3" seed="1">
+                <animate attributeName="seed" from="1" to="100" dur="60s" repeatCount="indefinite" />
+            </feTurbulence>
+            <feDisplacementMap in="SourceGraphic" scale="250" />
+        </filter>
+    </svg>
+
+    <!-- Контейнер для динамического фона -->
+    <div id="background-container">
+        <!-- Сюда JS будет добавлять img или video -->
+    </div>
+
+    <!-- Общий контейнер для центрирования контента -->
+    <div class="content-wrapper">
+
+        <!-- Главное Меню -->
+        <div id="main-menu" class="menu-screen active-screen">
+            <h1 data-i18n="mainMenu.title">Хроники Метерии: AI Приключение</h1>
+            <div class="menu-buttons">
+                <button id="new-game-button" data-i18n="mainMenu.newGame">Новая Игра</button>
+                <button id="load-game-button" data-i18n="mainMenu.loadGame">Загрузить Игру</button>
+                <button id="main-settings-button" data-i18n="mainMenu.settings">Настройки</button>
+                <button id="help-button" data-i18n="mainMenu.help">Помощь</button>
+                <button id="community-button" data-i18n="mainMenu.community">Сообщество</button>
+                <p class="api-key-status" id="api-key-status" data-i18n="mainMenu.apiKeyStatusChecking">Статус API ключа: Проверка...</p>
+            </div>
+        </div>
+
+		<!-- Меню Настроек -->
+		<div id="settings-menu" class="menu-screen" style="display: none;">
+			<h1 data-i18n="settingsMenu.title">Настройки</h1>
+			
+			<!-- Вкладки настроек -->
+			<div class="settings-tabs-nav">
+				<button class="settings-tab-btn active" onclick="switchSettingsTab(event, 'settings-ai-tab')"><i class="fas fa-robot"></i> ИИ и Язык</button>
+				<button class="settings-tab-btn" onclick="switchSettingsTab(event, 'settings-audio-tab')"><i class="fas fa-volume-up"></i> Звук</button>
+			</div>
+
+			<div class="settings-content">
+				<!-- ВКЛАДКА: ИИ -->
+				<div id="settings-ai-tab" class="settings-tab-content active">
+					<div class="form-group">
+						<label for="language-select" data-i18n="settingsMenu.languageLabel">Язык:</label>
+						<select id="language-select"></select>
+					</div>
+					<div class="form-group">
+						<label for="api-provider-select" data-i18n="settingsMenu.apiProviderLabel">Провайдер ИИ:</label>
+						<select id="api-provider-select">
+							<option value="gemini">Google Gemini</option>
+							<option value="llmost">LLMost.ru</option>
+							<option value="openrouter">OpenRouter.ai</option>
+							<option value="deepseek">DeepSeek</option>
+							<option value="local">Local (LM Studio)</option>
+						</select>
+					</div>
+					<div class="form-group" id="model-id-input-group">
+						<label for="model-id-input">ID Модели:</label>
+						<input type="text" id="model-id-input">
+					</div>
+					<div id="gemini-settings-group" class="provider-settings-group">
+						<div class="form-group">
+							<label>API Key:</label>
+							<div class="input-with-button">
+								<input type="password" id="gemini-api-key-input" placeholder="Вставьте ваш ключ">
+								<button id="toggle-key-view" type="button" title="Показать/Скрыть"><i class="fas fa-eye"></i></button>
+							</div>
+						</div>
+					</div>
+					<!-- Группы для остальных провайдеров (упрощено для краткости, JS ими управляет) -->
+					<div id="llmost-settings-group" class="provider-settings-group"><input type="password" id="llmost-api-key-input" placeholder="LLMost Key"></div>
+					<div id="deepseek-settings-group" class="provider-settings-group"><input type="password" id="deepseek-api-key-input" placeholder="DeepSeek Key"></div>
+					<div id="openrouter-settings-group" class="provider-settings-group"><input type="password" id="openrouter-api-key-input" placeholder="OpenRouter Key"></div>
+					<div id="local-settings-group" class="provider-settings-group"><input type="text" id="local-url-input" placeholder="http://localhost:1234/v1"></div>
+				</div>
+
+				<!-- ВКЛАДКА: ЗВУК -->
+				<div id="settings-audio-tab" class="settings-tab-content">
+					<div class="form-group">
+						<label>Общая громкость: <span id="val-master-vol">70%</span></label>
+						<input type="range" id="slider-master-vol" min="0" max="100" value="70">
+					</div>
+					<div class="form-group">
+						<label>Музыка: <span id="val-music-vol">50%</span></label>
+						<input type="range" id="slider-music-vol" min="0" max="100" value="50">
+					</div>
+					<div class="form-group">
+						<label>Эффекты (UI): <span id="val-ui-vol">80%</span></label>
+						<input type="range" id="slider-ui-vol" min="0" max="100" value="80">
+					</div>
+					<div class="form-group" id="tts-voice-selector-group">
+						<label>Голос озвучки:</label>
+						<select id="tts-voice-select"></select>
+					</div>
+				</div>
+				
+				<div class="form-group">
+					 <button id="save-settings-button">Сохранить всё</button>
+				</div>
+			</div>
+			<button class="back-button" id="settings-back-button">Назад</button>
+		</div>
+
+        <!-- ЭКРАН СОЗДАНИЯ ПЕРСОНАЖА (ВОССТАНОВЛЕН) -->
+        <div id="character-creation-screen" class="menu-screen" style="display: none;">
+            <h1 data-i18n="characterCreation.title">Создание Персонажа</h1>
+            <div class="creation-layout">
+                <div class="creation-column">
+                    <div class="form-group">
+                        <label data-i18n="characterCreation.nameLabel">Имя:</label>
+                        <input type="text" id="char-name-input">
+                    </div>
+                    <div class="form-group">
+                        <label data-i18n="characterCreation.raceLabel">Раса:</label>
+                        <select id="char-race-select">
+                            <option value="human">Человек</option>
+                            <option value="elf">Эльф</option>
+                            <option value="dwarf">Дварф</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label data-i18n="characterCreation.classLabel">Класс:</label>
+                        <select id="char-class-select">
+                            <option value="warrior">Воин</option>
+                            <option value="mage">Маг</option>
+                            <option value="rogue">Разбойник</option>
+                            <option value="bard">Бард</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label data-i18n="characterCreation.eraLabel">Эпоха:</label>
+                        <select id="char-era-select">
+                            <option value="rebirth" data-description-key="characterCreation.eraRebirthDesc">Возрождение</option>
+                            <option value="architects" data-description-key="characterCreation.eraArchitectsDesc">Архитекторы</option>
+                        </select>
+                        <div id="era-description-box" class="era-description-box"></div>
+                    </div>
+                </div>
+                <div class="creation-column">
+                    <div class="form-group">
+                        <label data-i18n="characterCreation.descLabel">Описание:</label>
+                        <textarea id="char-desc-input" rows="3"></textarea>
+                    </div>
+                    <div id="stat-distribution">
+                        <h3 data-i18n="characterCreation.statsTitle">Характеристики</h3>
+                        <p>Очков: <span id="stat-points-available">10</span></p>
+                        <div class="stat-row"><span>STR:</span><button class="stat-button minus" data-stat="str">-</button><span class="stat-value" id="create-stat-str">10</span><button class="stat-button plus" data-stat="str">+</button></div>
+                        <div class="stat-row"><span>DEX:</span><button class="stat-button minus" data-stat="dex">-</button><span class="stat-value" id="create-stat-dex">10</span><button class="stat-button plus" data-stat="dex">+</button></div>
+                        <div class="stat-row"><span>INT:</span><button class="stat-button minus" data-stat="int">-</button><span class="stat-value" id="create-stat-int">10</span><button class="stat-button plus" data-stat="int">+</button></div>
+                        <div class="stat-row"><span>CON:</span><button class="stat-button minus" data-stat="con">-</button><span class="stat-value" id="create-stat-con">10</span><button class="stat-button plus" data-stat="con">+</button></div>
+                        <div class="stat-row"><span>CHA:</span><button class="stat-button minus" data-stat="cha">-</button><span class="stat-value" id="create-stat-cha">10</span><button class="stat-button plus" data-stat="cha">+</button></div>
+                    </div>
+                </div>
+            </div>
+            <div class="creation-buttons">
+                <button id="start-game-button" disabled>Далее</button>
+                <button id="quick-start-button">Быстрый старт</button>
+                <button class="back-button" data-target="main-menu">Отмена</button>
+            </div>
+            <p id="creation-error" class="error-message"></p>
+        </div>
+
+        <!-- ЭКРАН ВЫБОРА РАССКАЗЧИКА -->
+        <div id="narrator-selection-screen" class="menu-screen" style="display: none;">
+            <h1 data-i18n="narratorSelection.title">Выберите Рассказчика</h1>
+            <div class="narrator-selector">
+                <button id="narrator-prev" class="arrow-button">◀</button>
+                <div id="narrator-card" class="narrator-card"><div class="narrator-text-content"><h2 id="narrator-name">...</h2><p id="narrator-desc">...</p></div></div>
+                <button id="narrator-next" class="arrow-button">▶</button>
+            </div>
+            <button id="confirm-narrator-button" data-i18n="narratorSelection.confirmButton">Начать</button>
+            <button class="back-button" data-target="character-creation-screen">Назад</button>
+        </div>
+
+        <!-- ЭКРАН ЗАГРУЗКИ (ВОССТАНОВЛЕН) -->
+        <div id="load-game-screen" class="menu-screen" style="display: none;">
+            <h1 data-i18n="loadGame.title">Загрузка</h1>
+            <div class="save-slots-container">
+                <h2 data-i18n="loadGame.manualSavesTitle">Ручные</h2>
+                <ul id="manual-save-slots" class="save-list"></ul>
+                <h2 data-i18n="loadGame.autoSavesTitle">Авто</h2>
+                <ul id="auto-save-slots" class="save-list"></ul>
+            </div>
+            <button class="back-button" data-target="main-menu">Назад</button>
+        </div>
+
+        <!-- ЭКРАН ПОМОЩИ (ПОЛНАЯ ВЕРСИЯ) -->
+        <div id="help-screen" class="menu-screen help-screen-custom" style="display: none;">
+            <h1 data-i18n="helpScreen.title">Помощь по Игре</h1>
+            
+            <div class="help-tabs-nav" style="display: flex; gap: 10px; margin-bottom: 20px; justify-content: center; width: 100%;">
+                <button class="help-tab-btn active" onclick="switchHelpTab(event, 'general-help')">Общие советы</button>
+                <button class="help-tab-btn" onclick="switchHelpTab(event, 'api-help')">Настройка API (Инструкция)</button>
+            </div>
+
+            <div class="help-content" style="width: 100%; max-height: 60vh; overflow-y: auto; padding: 10px 20px; background: rgba(0,0,0,0.4); border-radius: 8px; border: 1px solid #3498db;">
+                <!-- Секция общей помощи -->
+                <div id="general-help" class="help-tab-content active">
+                    <h2 style="color: #5dade2; border-bottom: 1px solid rgba(52, 152, 219, 0.4);">Как играть?</h2>
+                    <p>Вы управляете героем, описывая его действия текстом. ИИ реагирует на ваши слова и бросает вам вызовы.</p>
+                    <ul>
+                        <li><b>Счетовод:</b> Логический модуль. Следит, чтобы вы не могли поднять 1000 кг или убить дракона на 1 уровне.</li>
+                        <li><b>Поэт:</b> Творческий модуль. Превращает расчеты Счетовода в красивую историю.</li>
+                        <li><b>Свобода:</b> Вы можете делать что угодно — от кражи яблок до основания империи.</li>
+                    </ul>
+                </div>
+
+                <!-- Секция помощи по API -->
+                <div id="api-help" class="help-tab-content" style="display: none;">
+                    <h2 style="color: #5dade2; border-bottom: 1px solid rgba(52, 152, 219, 0.4);">Настройка API Ключей</h2>
+                    
+                    <div class="api-info-block" style="background: rgba(231, 76, 60, 0.1); padding: 15px; border-radius: 8px; margin-bottom: 15px; border-left: 4px solid #e74c3c;">
+                        <h3 style="margin-top: 0; color: #e74c3c;">1. Google Gemini (Бесплатно)</h3>
+                        <p><b>Лимиты:</b> 2 запроса в минуту. Бесплатно.</p>
+                        <ol>
+                            <li>Зайдите на <a href="https://aistudio.google.com/" target="_blank" style="color: #3498db;">Google AI Studio</a>.</li>
+                            <li>Нажмите <b>"Get API key"</b> слева.</li>
+                            <li>Нажмите <b>"Create API key in new project"</b>.</li>
+                            <li>Скопируйте код и вставьте в Настройках игры.</li>
+                        </ol>
+                    </div>
+
+                    <div class="api-info-block" style="background: rgba(52, 152, 219, 0.1); padding: 15px; border-radius: 8px; margin-bottom: 15px; border-left: 4px solid #3498db;">
+                        <h3 style="margin-top: 0; color: #3498db;">2. OpenRouter (Стабильно)</h3>
+                        <p><b>Плюс:</b> Много бесплатных и мощных платных моделей.</p>
+                        <ol>
+                            <li>Зайдите на <a href="https://openrouter.ai/" target="_blank" style="color: #3498db;">OpenRouter.ai</a>.</li>
+                            <li>В меню найдите <b>"Keys"</b> -> <b>"Create Key"</b>.</li>
+                            <li>В настройках игры выберите OpenRouter и вставьте ключ.</li>
+                            <li>ID Модели: <code>google/gemma-2-9b-it:free</code></li>
+                        </ol>
+                    </div>
+
+                    <div class="api-info-block" style="background: rgba(46, 204, 113, 0.1); padding: 15px; border-radius: 8px; border-left: 4px solid #2ecc71;">
+                        <h3 style="margin-top: 0; color: #2ecc71;">3. Локальный запуск (LM Studio)</h3>
+                        <p>Если у вас мощный ПК, скачайте LM Studio, запустите сервер, и игра будет работать бесплатно и без интернета.</p>
+                    </div>
+                </div>
+            </div>
+            <button class="back-button" data-target="main-menu" style="margin-top: 20px;">Назад в Меню</button>
+        </div>
+
+        <!-- ОСНОВНОЙ ИГРОВОЙ ИНТЕРФЕЙС (ВОССТАНОВЛЕН) -->
+        <div class="game-container" id="game-interface" style="display: none;">
+            <header class="game-header">
+                 <h1 id="game-title">Хроники Метерии</h1>
+                 <div class="header-controls">
+                     <button id="open-map-button" title="Открыть карту"><i class="fas fa-compass"></i></button>
+                     <button id="toggle-tts-button" title="Включить озвучку"><i class="fas fa-comment-dots"></i></button>
+                     <button id="toggle-music-button" title="Включить музыку"><i class="fas fa-volume-off"></i></button>
+                     <button id="in-game-menu-button" title="Меню">☰</button>
+                 </div>
+            </header>
+
+            <div class="main-layout">
+                <aside class="sidebar left-sidebar">
+                    <div class="panel character-sheet collapsible-panel expanded">
+                        <h2 class="panel-toggle">Персонаж <span class="toggle-icon">▼</span></h2>
+                        <div class="panel-content">
+                            <div id="character-name">Имя: <span>...</span></div>
+                            <div id="character-race">Раса: <span>...</span></div>
+                            <div id="character-class">Класс: <span>...</span></div>
+                            <div id="level-info"></div>
+                            <div id="character-stats">
+                                <p class="stat-line">❤️ HP:<span class="stat-value-group"><span id="stat-hp">100</span> / <span id="stat-max-hp">100</span></span></p>
+                                <p class="stat-line mage-only" id="mana-stat-line" style="display: none;">💧 Mana:<span class="stat-value-group"><span id="stat-mana">50</span> / <span id="stat-max-mana">50</span></span></p>
+                                <p class="stat-line" data-stat="str">⚔️ Сила: <span><span id="stat-str">10</span><button class="stat-increase-button" data-stat="str">+</button></span></p>
+                                <p class="stat-line" data-stat="dex">🤸 Ловкость: <span><span id="stat-dex">10</span><button class="stat-increase-button" data-stat="dex">+</button></span></p>
+                                <p class="stat-line" data-stat="int">💡 Интеллект: <span><span id="stat-int">10</span><button class="stat-increase-button" data-stat="int">+</button></span></p>
+                                <p class="stat-line" data-stat="con">맷 Стойкость: <span><span id="stat-con">10</span><button class="stat-increase-button" data-stat="con">+</button></span></p>
+                                <p class="stat-line">💰 Золото: <span id="stat-gold">0</span></p>
+                                <p class="stat-line">📍 Локация: <span id="stat-location">...</span></p>
+                            </div>
+                        </div>
+                    </div>
+                    
+					<div class="panel equipment-panel-v2">
+						<h2>Экипировка</h2>
+						<div class="panel-content">
+							<div class="body-diagram">
+								<div class="body-column">
+									<div class="equipment-slot-v2" id="equipment-slot-head" data-slot="head"><i class="fas fa-crown"></i></div>
+									<div class="equipment-slot-v2" id="equipment-slot-torso" data-slot="torso"><i class="fas fa-tshirt"></i></div>
+									<div class="equipment-slot-v2" id="equipment-slot-legs" data-slot="legs"><i class="fas fa-mitten"></i></div>
+								</div>
+								<div class="body-column">
+									<div class="equipment-slot-v2" id="equipment-slot-right_hand" data-slot="right_hand"><i class="fas fa-gavel"></i></div>
+									<div class="equipment-slot-v2" id="equipment-slot-left_hand" data-slot="left_hand"><i class="fas fa-hand-paper"></i></div>
+								</div>
+							</div>
+						</div>
+					</div>
+                </aside>
+
+                <main class="game-content">
+                    <div class="panel game-log" id="game-log"></div>
+					<div id="quick-tags-bar" class="quick-tags-bar"></div>
+                    <div class="input-area">
+                        <input type="text" id="user-input" placeholder="Что вы будете делать?">
+					    <div id="active-rolls-container"></div>
+                        <button id="send-button">Отправить</button>
+                    </div>
+                </main>
+
+                <aside class="sidebar right-sidebar">
+                     <div class="panel quests collapsible-panel">
+                         <h2 class="panel-toggle">Задания <span class="toggle-icon">▶</span></h2>
+                         <div class="panel-content"><ul id="quest-list"></ul></div>
+                     </div>
+                     <div class="panel environment-panel collapsible-panel">
+                        <h2 class="panel-toggle">Окружение <span class="toggle-icon">▶</span></h2>
+                        <div class="panel-content"><ul id="environment-list"></ul></div>
+                    </div>
+                </aside>
+            </div>
+        </div>
+
+    </script>
+    
+    <script src="script.js"></script>
+<!-- ПОЛНОЭКРАННАЯ КАРТА (АТЛАС) -->
+    <div id="map-modal-overlay" class="custom-alert-overlay" style="display:none; z-index: 5000;">
+        <div class="map-atlas-container">
+            <div class="map-atlas-header">
+                <h2>Карта мира (Атлас)</h2>
+                <button id="close-map-button" class="close-atlas-btn">×</button>
+            </div>
+            <div class="map-atlas-body">
+                <canvas id="visual-map"></canvas>
+            </div>
+            <div class="map-atlas-footer">
+                <p class="map-hint">ЛКМ — двигать, Колесо — зум</p>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
