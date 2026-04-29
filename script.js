@@ -4441,8 +4441,7 @@ async function finalizeWorldSetupAndStart() {
     await loadActiveEraLore(player.era);
     await loadGlobalLocations(DEFAULT_WORLD_ID, currentLanguage, player.era);
 
-    World = await initWorldSimulator(initialAgents);
-
+    // Показываем экран загрузки ПЕРЕД началом тяжелой генерации
     conversationHistory = [];
     currentSaveSlot = null;
     nextInternalQuestId = 1;
@@ -4452,13 +4451,14 @@ async function finalizeWorldSetupAndStart() {
     console.log("Игра начинается с персонажем:", player);
 
     initializeGameInterface();
-    setActiveScreen('game-interface');
     showLoadingScreen('loadingScreen.generatingWorld', 'Генерация мира...');
+
+    World = await initWorldSimulator(initialAgents);
 
     if (enableWorldSim) {
         await preSimulateWorldHistory(yearsToSimulate);
         const loadingText = document.getElementById('loading-text');
-        if (loadingText) loadingText.textContent = t('loadingScreen.generatingWorld', null, 'Генерация мира...');
+        if (loadingText) loadingText.textContent = t('loadingScreen.finalizing', null, 'Завершение...');
     }
 
     const selectedNarrator = narrators[currentNarratorIndex];
