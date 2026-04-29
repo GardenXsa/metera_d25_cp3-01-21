@@ -190,62 +190,8 @@ const WorkerInventorySystem = {
     }
 };
 
-function syncPhysicalToAbstract() {
-    if (!World) return;
-    for (let rId in World.regions) {
-        let r = World.regions[rId];
-        if (!r.vault_id) continue;
-        let vault = ContainerRegistry.get(r.vault_id);
-        if (!vault) continue;
-        let physicalCounts = {};
-        vault.items.forEach(itemId => {
-            let item = ItemRegistry.get(itemId);
-            if (item) physicalCounts[item.prototype_id] = (physicalCounts[item.prototype_id] || 0) + item.stack_size;
-        });
-        for (let res in r.resources) {
-            let physAmt = physicalCounts[res] || 0;
-            if (physAmt < r.resources[res].amount) {
-                let diff = r.resources[res].amount - physAmt;
-                consumeBatch(r.resources, res, diff);
-            }
-        }
-    }
-}
-
-function syncAbstractToPhysical() {
-    if (!World) return;
-    for (let rId in World.regions) {
-        let r = World.regions[rId];
-        if (!r.vault_id) continue;
-        let vault = ContainerRegistry.get(r.vault_id);
-        if (!vault) continue;
-        for (let res in r.resources) {
-            let absAmt = Math.floor(r.resources[res].amount);
-            let existingItemIds = vault.items.filter(id => ItemRegistry.get(id)?.prototype_id === res);
-            let currentPhysAmt = existingItemIds.reduce((sum, id) => sum + ItemRegistry.get(id).stack_size, 0);
-            
-            if (absAmt > currentPhysAmt) {
-                let diff = absAmt - currentPhysAmt;
-                WorkerInventorySystem.createItem(res, diff, r.vault_id, { name: getItemName(res, player ? player.era : 'rebirth') });
-            } else if (absAmt < currentPhysAmt) {
-                let diff = currentPhysAmt - absAmt;
-                for (let id of existingItemIds) {
-                    let item = ItemRegistry.get(id);
-                    if (diff >= item.stack_size) {
-                        diff -= item.stack_size;
-                        ItemRegistry.delete(id);
-                        vault.items = vault.items.filter(i => i !== id);
-                    } else {
-                        item.stack_size -= diff;
-                        diff = 0;
-                    }
-                    if (diff <= 0) break;
-                }
-            }
-        }
-    }
-}
-
+// Функции синхронизации удалены - теперь используются только физические предметы
+// Все ресурсы хранятся исключительно в контейнерах как физические items
 
 const SHELF_LIFE = {
     'meat': 5, 'fish': 5, 'bread': 10, 'wheat': 360, 'smoked_meat': 180, 'herbs': 30,
@@ -364,9 +310,7 @@ async function preSimulateWorldHistory(yearsToSimulate) {
         World.time.internalHour = player && player.gameTime ? player.gameTime.hour : 0;
     }
 
-    
-
-    syncPhysicalToAbstract();
+    // Синхронизация удалена - используются только физические предметы
     return new Promise((resolve) => {
         function simulateChunk() {
             for (let i = 0; i < chunkSize && currentDay < totalDays; i++) {
@@ -435,7 +379,7 @@ async function preSimulateWorldHistory(yearsToSimulate) {
                 World.needsGlobalEvent = false;
                 IS_PRE_SIMULATING = false;
                 console.log(`[WorldSim] Пред-симуляция завершена. Прошло ${yearsToSimulate} лет.`);
-                syncAbstractToPhysical();
+                // Синхронизация удалена - используются только физические предметы
                 resolve();
             }
         }
@@ -497,16 +441,16 @@ function initWorldSimulator() {
     let locMap = {};
 
     if (currentEra === 'architects') {
-        fConfig = { "orthodoxy": { name: "Ортодоксия Решетки", g: [80000, 120000], f: [20000, 30000], m: [15000, 25000], stab: 90 }, "syndicate": { name: "Синдикат Экспансии", g: [100000, 150000], f: [10000, 15000], m: [10000, 20000], stab: 80 }, "greencode": { name: "Фракция Зеленого Кода", g: [20000, 40000], f: [50000, 80000], m: [5000, 10000], stab: 85 }, "ascendancy": { name: "Культ Перехода", g: [30000, 50000], f: [5000, 10000], m: [8000, 15000], stab: 60 }, "apostates": { name: "Апостаты Пустоты", g: [10000, 20000], f: [2000, 5000], m: [20000, 30000], stab: 40 } };
+        fConfig = { "orthodoxy": { name: "Ортодоксия Решетки", g: [80000, 120000], f: [20000, 30000], m: [15000, 25000] }, "syndicate": { name: "Синдикат Экспансии", g: [100000, 150000], f: [10000, 15000], m: [10000, 20000] }, "greencode": { name: "Фракция Зеленого Кода", g: [20000, 40000], f: [50000, 80000], m: [5000, 10000] }, "ascendancy": { name: "Культ Перехода", g: [30000, 50000], f: [5000, 10000], m: [8000, 15000] }, "apostates": { name: "Апостаты Пустоты", g: [10000, 20000], f: [2000, 5000], m: [20000, 30000] } };
         locMap = { "nexus_prime": "orthodoxy", "solar_citadel": "orthodoxy", "obsidian_wall": "orthodoxy", "sky_harbor": "syndicate", "silver_conduits": "syndicate", "whispering_gardens": "greencode", "aethel_spires": "greencode", "genesis_craters": "greencode", "arcanum_archive": "ascendancy", "crystal_matrix": "ascendancy", "bio_forge": "ascendancy", "void_bastion": "apostates", "resonance_pits": "syndicate", "deep_sea_obs": "orthodoxy" };
     } else if (currentEra === 'silence') {
-        fConfig = { "iron_remnant": { name: "Железный Остаток", g: [5000, 10000], f: [2000, 5000], m: [8000, 12000], stab: 85 }, "flesh_cult": { name: "Культ Плоти", g: [1000, 3000], f: [8000, 15000], m: [10000, 20000], stab: 50 }, "heralds": { name: "Вестники Безмолвия", g: [0, 1000], f: [1000, 2000], m: [15000, 25000], stab: 99 }, "logic_purge": { name: "Орден Логической Чистки", g: [20000, 30000], f: [0, 0], m: [5000, 10000], stab: 100 }, "scavengers": { name: "Падальщики Нексуса", g: [10000, 20000], f: [3000, 6000], m: [4000, 8000], stab: 40 } };
+        fConfig = { "iron_remnant": { name: "Железный Остаток", g: [5000, 10000], f: [2000, 5000], m: [8000, 12000] }, "flesh_cult": { name: "Культ Плоти", g: [1000, 3000], f: [8000, 15000], m: [10000, 20000] }, "heralds": { name: "Вестники Безмолвия", g: [0, 1000], f: [1000, 2000], m: [15000, 25000] }, "logic_purge": { name: "Орден Логической Чистки", g: [20000, 30000], f: [0, 0], m: [5000, 10000] }, "scavengers": { name: "Падальщики Нексуса", g: [10000, 20000], f: [3000, 6000], m: [4000, 8000] } };
         locMap = { "iron_remnant_base": "iron_remnant", "rusting_spires": "iron_remnant", "flesh_craft_pits": "flesh_cult", "bone_fields": "flesh_cult", "forgotten_obs": "heralds", "muted_valley": "heralds", "deep_vault_7": "logic_purge", "crystal_wastes": "logic_purge", "scrap_canyon": "scavengers", "aquilon_ruins": "scavengers", "sunken_haven": "scavengers", "ash_desert": "scavengers", "silent_forest": "flesh_cult", "dead_lake": "flesh_cult", "whispering_dunes": "scavengers" };
     } else if (currentEra === 'sundering') {
-        fConfig = { "survivors": { name: "Выжившие Аквилона", g: [5000, 10000], f: [2000, 4000], m: [3000, 6000], stab: 30 }, "mutants": { name: "Улей Мутантов", g: [0, 0], f: [10000, 20000], m: [20000, 40000], stab: 90 }, "storm_cult": { name: "Культ Эфирного Шторма", g: [2000, 5000], f: [1000, 3000], m: [8000, 15000], stab: 50 }, "mad_constructs": { name: "Безумные Конструкты", g: [10000, 20000], f: [0, 0], m: [10000, 15000], stab: 100 } };
+        fConfig = { "survivors": { name: "Выжившие Аквилона", g: [5000, 10000], f: [2000, 4000], m: [3000, 6000] }, "mutants": { name: "Улей Мутантов", g: [0, 0], f: [10000, 20000], m: [20000, 40000] }, "storm_cult": { name: "Культ Эфирного Шторма", g: [2000, 5000], f: [1000, 3000], m: [8000, 15000] }, "mad_constructs": { name: "Безумные Конструкты", g: [10000, 20000], f: [0, 0], m: [10000, 15000] } };
         locMap = { "falling_aquilon": "survivors", "ruined_sky_harbor": "survivors", "ashen_coast": "survivors", "mutant_hive": "mutants", "flesh_labyrinth": "mutants", "burning_forest": "mutants", "expanding_scar": "storm_cult", "storms_eye": "storm_cult", "bleeding_earth": "storm_cult", "glass_desert": "mad_constructs", "sunken_arcanum": "mad_constructs", "chasm_of_screams": "mad_constructs", "shattered_peaks": "survivors", "void_wastes": "storm_cult", "boiling_sea": "mutants" };
     } else {
-        fConfig = { "aquilon": { name: "Аквилонская Директория", g: [30000, 50000], f: [20000, 30000], m: [15000, 25000], stab: 80 }, "khazadrim": { name: "Кхазадримский Конклав", g: [40000, 60000], f: [8000, 15000], m: [10000, 15000], stab: 90 }, "sylvanesti": { name: "Сильванестийский Симбиоз", g: [5000, 10000], f: [40000, 60000], m: [5000, 8000], stab: 85 }, "gronnar": { name: "Гроннарская Орда", g: [2000, 5000], f: [10000, 15000], m: [20000, 30000], stab: 50 }, "consortium": { name: "Свободные Торговцы", g: [80000, 150000], f: [15000, 25000], m: [5000, 10000], stab: 70 }, "crimson": { name: "Орден Багрового Пламени", g: [15000, 25000], f: [10000, 15000], m: [8000, 12000], stab: 95 } };
+        fConfig = { "aquilon": { name: "Аквилонская Директория", g: [30000, 50000], f: [20000, 30000], m: [15000, 25000] }, "khazadrim": { name: "Кхазадримский Конклав", g: [40000, 60000], f: [8000, 15000], m: [10000, 15000] }, "sylvanesti": { name: "Сильванестийский Симбиоз", g: [5000, 10000], f: [40000, 60000], m: [5000, 8000] }, "gronnar": { name: "Гроннарская Орда", g: [2000, 5000], f: [10000, 15000], m: [20000, 30000] }, "consortium": { name: "Свободные Торговцы", g: [80000, 150000], f: [15000, 25000], m: [5000, 10000] }, "crimson": { name: "Орден Багрового Пламени", g: [15000, 25000], f: [10000, 15000], m: [8000, 12000] } };
         locMap = { "capital_aquilon": "aquilon", "ruins_arcanum": "aquilon", "thunder_citadel": "khazadrim", "crystal_caves": "khazadrim", "dragon_spine_mountains": "khazadrim", "whispering_woods": "sylvanesti", "floating_islands_of_aethel": "sylvanesti", "nomad_lands_ash_plains": "gronnar", "the_scarred_wastes": "gronnar", "the_shifting_sands_of_khem": "gronnar", "silver_haven": "consortium", "sunken_city_of_aeridor": "consortium", "sanctum_of_whispers": "crimson", "ether_scar_chasm": "crimson", "forgotten_observatory": "crimson" };
     }
 
@@ -653,7 +597,7 @@ return newWorld;
 
 function updateWorldSimulation(pulses) {
     if (!World) return;
-    syncPhysicalToAbstract();
+    // Синхронизация удалена - используются только физические предметы
     
     if (typeof World.time.internalHour === 'undefined') {
         World.time.internalHour = player && player.gameTime ? player.gameTime.hour : 0;
@@ -672,7 +616,7 @@ function updateWorldSimulation(pulses) {
         }
     }
     syncWorldWithPlayer();
-    syncAbstractToPhysical();
+    // Синхронизация удалена - используются только физические предметы
 }
 
 function simulateOneHour() {
@@ -709,10 +653,11 @@ function simulateOneHour() {
 
         if (npc.needs.hunger < 25) {
             npc.currentActivity = "Ищет еду";
-            // Фоновая торговля NPC: Покупка еды
-            if (npc.inventory.gold >= foodPrice && currentRegion.resources.bread && currentRegion.resources.bread.amount > 0) {
+            // Фоновая торговля NPC: Покупка еды из физических запасов региона
+            const breadAvailable = countRealItems(currentRegion.vault_id, 'bread');
+            if (npc.inventory.gold >= foodPrice && breadAvailable > 0) {
                 npc.inventory.gold -= foodPrice;
-                consumeBatch(currentRegion.resources, 'bread', 1);
+                consumeRealItems(currentRegion.vault_id, 'bread', 1);
                 currentRegion.moneySupply += foodPrice;
                 npc.needs.hunger = 100;
                 npc.currentActivity = "Ест";
@@ -748,9 +693,10 @@ function simulateOneHour() {
                         if (Math.random() < 0.1 && npc.inventory_id) {
                             let good = Object.keys(currentRegion.markets)[Math.floor(Math.random() * Object.keys(currentRegion.markets).length)];
                             let price = currentRegion.markets[good];
-                            if (npc.inventory.gold >= price && currentRegion.resources[good] && currentRegion.resources[good].amount > 0) {
+                            const available = countRealItems(currentRegion.vault_id, good);
+                            if (npc.inventory.gold >= price && available > 0) {
                                 npc.inventory.gold -= price;
-                                consumeBatch(currentRegion.resources, good, 1);
+                                consumeRealItems(currentRegion.vault_id, good, 1);
                                 WorkerInventorySystem.createItem(good, 1, npc.inventory_id, { name: getItemName(good, player?.era) });
                             }
                         }
@@ -779,23 +725,28 @@ function simulateOneHour() {
             caravan.hoursLeft--;
             if (caravan.hoursLeft <= 0) {
                 let destRegion = World.regions[caravan.destination];
-                if (destRegion) {
-                    let totalRevenue = 0;
-                    for (let good in caravan.goods) {
-                        let amount = caravan.goods[good];
-                        if (!destRegion.resources[good]) destRegion.resources[good] = { amount: 0, quality: 1.0, batches: [] };
-                        destRegion.resources[good].amount += amount;
-                        let revenue = amount * (destRegion.markets[good] || 1);
-                        totalRevenue += revenue;
-                        destRegion.moneySupply = Math.max(0, destRegion.moneySupply - revenue);
+                if (destRegion && caravan.chest_id) {
+                    // Перемещаем предметы из контейнера каравана в склад получателя
+                    const chest = ContainerRegistry.get(caravan.chest_id);
+                    if (chest) {
+                        let totalRevenue = 0;
+                        for (const itemId of [...chest.items]) {
+                            const item = ItemRegistry.get(itemId);
+                            if (!item) continue;
+                            // Перемещаем предмет в новый контейнер
+                            CoreInventorySystem.moveItem(itemId, destRegion.vault_id);
+                            const revenue = item.stack_size * (destRegion.markets[item.prototype_id] || 1);
+                            totalRevenue += revenue;
+                        }
+                        // Удаляем контейнер каравана
+                        ContainerRegistry.delete(caravan.chest_id);
+                        
+                        let goodsList = Object.entries(caravan.goods).map(([g, a]) => `${a} ${getGoodName(g)}`).join(', ');
+                        generateWorldNews(
+                            `ЭКОНОМИКА: Караван из ${region.name} прибыл в ${destRegion.name}! Доставлено: ${goodsList}. Выручка: ${Math.floor(totalRevenue)} золотых.`,
+                            destRegion.name, 2, 'trade'
+                        );
                     }
-                    
-                    // НОВОСТЬ: Прибытие каравана
-                    let goodsList = Object.entries(caravan.goods).map(([g, a]) => `${a} ${getGoodName(g)}`).join(', ');
-                    generateWorldNews(
-                        `ЭКОНОМИКА: Караван из ${region.name} прибыл в ${destRegion.name}! Доставлено: ${goodsList}. Выручка: ${Math.floor(totalRevenue)} золотых.`,
-                        destRegion.name, 2, 'trade'
-                    );
                 }
                 region.caravans.splice(i, 1);
             }
@@ -1057,9 +1008,11 @@ function simulateOneDay() {
             }
             
             let foodPrice = r.markets.bread || 5;
-            if (npc.economy.savings >= foodPrice && r.resources.bread && r.resources.bread.amount > 0) {
+            // NPC покупают еду только если есть физические запасы на складе региона
+            const breadAvailable = countRealItems(r.vault_id, 'bread');
+            if (npc.economy.savings >= foodPrice && breadAvailable > 0) {
                 npc.economy.savings -= foodPrice;
-                consumeBatch(r.resources, 'bread', 1);
+                consumeRealItems(r.vault_id, 'bread', 1);
                 r.moneySupply += foodPrice;
                 npc.needs.hunger = 100;
             }
@@ -1116,20 +1069,36 @@ function simulateOneDay() {
                 let cost = amount * localPrice;
 
                 if (amount > 0) {
-                    // Потребляем физические предметы из склада
-                    consumeRealItems(r.vault_id, good, amount);
+                    // Создаем контейнер каравана и помещаем в него физические предметы
+                    const caravanChestId = WorkerInventorySystem.createContainer(
+                        "caravan_chest",
+                        r.owner,
+                        999999,
+                        1000,
+                        { region_id: rId },
+                        {
+                            lock_data: { is_locked: false, difficulty: 10 },
+                            physical_props: { health: 100, flammable: true }
+                        }
+                    );
+                    
+                    // Потребляем физические предметы из склада региона и создаем их в контейнере каравана
+                    const taken = consumeRealItems(r.vault_id, good, amount);
+                    addRealItems(caravanChestId, good, taken);
+                    
                     r.moneySupply += cost;
                     r.caravans.push({
                         id: "caravan_" + Date.now() + Math.floor(Math.random()*1000),
                         origin: rId, destination: bestDest, 
-                        goods: { [good]: amount },
+                        goods: { [good]: taken },
+                        chest_id: caravanChestId,
                         buyPrice: localPrice, investment: cost, hoursLeft: 24 + Math.floor(Math.random() * 48)
                     });
                     
                     // НОВОСТЬ: Отправка каравана (только для значимых партий)
-                    if (amount >= 100 && Math.random() < 0.4) {
+                    if (taken >= 100 && Math.random() < 0.4) {
                         generateWorldNews(
-                            `ЭКОНОМИКА: Из ${r.name} в ${destRegion.name} отправлен караван с ${amount} ед. ${getGoodName(good)}. Ожидаемая прибыль: ${Math.floor(amount * (destRegion.markets[good] - localPrice))} золотых.`,
+                            `ЭКОНОМИКА: Из ${r.name} в ${destRegion.name} отправлен караван с ${taken} ед. ${getGoodName(good)}. Ожидаемая прибыль: ${Math.floor(taken * (destRegion.markets[good] - localPrice))} золотых.`,
                             rId, 2, 'trade'
                         );
                     }
@@ -1352,13 +1321,42 @@ function simulateOneDay() {
                     consumeRealItems(homeRegion.vault_id, 'bread', Math.floor(foodToTake * 0.7));
                     consumeRealItems(homeRegion.vault_id, 'meat', Math.floor(foodToTake * 0.3));
                     
+                    // Создаем контейнер армии для припасов
+                    const armyChestId = WorkerInventorySystem.createContainer(
+                        "army_supply_chest",
+                        fId,
+                        999999,
+                        1000,
+                        { region_id: homeRegionId },
+                        {
+                            lock_data: { is_locked: false, difficulty: 10 },
+                            physical_props: { health: 200, flammable: true }
+                        }
+                    );
+                    
+                    // Перемещаем еду в контейнер армии
+                    const breadTaken = consumeRealItems(homeRegion.vault_id, 'bread', Math.floor(foodToTake * 0.7));
+                    const meatTaken = consumeRealItems(homeRegion.vault_id, 'meat', Math.floor(foodToTake * 0.3));
+                    addRealItems(armyChestId, 'bread', breadTaken);
+                    addRealItems(armyChestId, 'meat', meatTaken);
+                    
                     // Расчет морали в зависимости от обеспечения
                     let armyMorale = 100;
                     if (weaponsToTake < armySize * 0.5) armyMorale -= 25; // Плохо вооружены
                     if (foodToTake < armySize) armyMorale -= 25; // Голодные
                     
                     let armyId = "army_" + Date.now() + Math.floor(Math.random()*1000);
-                    f.armies.push({ id: armyId, size: armySize, morale: armyMorale, location: homeRegionId, destination: targetRegionId, daysToMove: 3, siegeDays: -1 });
+                    f.armies.push({ 
+                        id: armyId, 
+                        size: armySize, 
+                        morale: armyMorale, 
+                        location: homeRegionId, 
+                        destination: targetRegionId, 
+                        daysToMove: 3, 
+                        siegeDays: -1,
+                        supply_chest_id: armyChestId,
+                        weapons_count: weaponsToTake
+                    });
                     generateWorldNews(`Снаряженная армия ${f.name} (${armySize} воинов) выступила из ${homeRegion.name} в поход на ${World.regions[targetRegionId].name}.`, homeRegionId, 4, 'war');
                 }
             }
@@ -1415,6 +1413,32 @@ function simulateOneDay() {
                     generateWorldNews(`Армия ${f.name} взяла в осаду ${targetRegion.name}! Город отрезан от поставок.`, targetLoc, 4, 'war');
                 } else if (army.siegeDays > 0) {
                     army.siegeDays--;
+                    // Потребление еды армией осаждающих из контейнера припасов
+                    if (army.supply_chest_id) {
+                        const supplyChest = ContainerRegistry.get(army.supply_chest_id);
+                        if (supplyChest) {
+                            const armyBread = countRealItems(army.supply_chest_id, 'bread');
+                            const armyMeat = countRealItems(army.supply_chest_id, 'meat');
+                            const dailyNeed = Math.floor(army.size * 0.5);
+                            let consumed = 0;
+                            if (armyBread > 0) {
+                                consumed += consumeRealItems(army.supply_chest_id, 'bread', Math.min(dailyNeed, armyBread));
+                            }
+                            if (consumed < dailyNeed && armyMeat > 0) {
+                                consumed += consumeRealItems(army.supply_chest_id, 'meat', Math.min(dailyNeed - consumed, armyMeat));
+                            }
+                            // Если у армии кончилась еда – она распадается
+                            if (consumed < dailyNeed) {
+                                armyMorale -= 20;
+                                if (armyMorale <= 0) {
+                                    generateWorldNews(`Армия ${f.name} распалась от голода при осаде ${targetRegion.name}!`, targetLoc, 4, 'war');
+                                    f.armies.splice(i, 1);
+                                    armySurvived = false;
+                                    continue;
+                                }
+                            }
+                        }
+                    }
                     // РАЗРУШЕНИЯ ОТ ОСАДЫ: потребление еды из склада города
                     targetRegion.population -= Math.floor(Math.random() * 200);
                     const cityBread = countRealItems(targetRegion.vault_id, 'bread');
@@ -1428,14 +1452,18 @@ function simulateOneDay() {
                     
                     if (atkPower > garrisonPower) {
                         targetRegion.owner = fId;
-                        // ГРАБЕЖ ПРИ ЗАХВАТЕ: перемещаем золото физически
+                        // ГРАБЕЖ ПРИ ЗАХВАТЕ: перемещаем все предметы из склада захваченного региона в столицу победителя
                         const targetVault = targetRegion.vault_id;
                         const capitalRegionId = Object.keys(World.regions).find(rid => World.regions[rid].owner === fId);
                         if (capitalRegionId && targetVault) {
-                            const goldAmount = countRealItems(targetVault, 'gold');
-                            const tribute = Math.floor(goldAmount * 0.5);
-                            consumeRealItems(targetVault, 'gold', tribute);
-                            addRealItems(World.regions[capitalRegionId].vault_id, 'gold', tribute);
+                            const targetChest = ContainerRegistry.get(targetVault);
+                            const capitalChest = ContainerRegistry.get(World.regions[capitalRegionId].vault_id);
+                            if (targetChest && capitalChest) {
+                                // Перемещаем каждый предмет
+                                for (const itemId of [...targetChest.items]) {
+                                    CoreInventorySystem.moveItem(itemId, capitalChest.id);
+                                }
+                            }
                         }
                         targetRegion.moneySupply *= 0.5;
                         generateWorldNews(`ШТУРМ УСПЕШЕН! После жестокой осады ${targetRegion.name} пал под натиском ${f.name}! Город разграблен.`, targetLoc, 5, 'war');
@@ -1526,8 +1554,8 @@ function syncWorldWithPlayer() {
                 let sellPrice = Math.floor(basePrice * (1.1 + Math.random() * 0.3)); // +10-40%
                 let buyPrice = Math.floor(basePrice * (0.7 + Math.random() * 0.2)); // -30-10%
                 
-                // Количество товара зависит от ресурсов региона
-                let maxAvailable = region.resources[good]?.amount || 0;
+                // Количество товара зависит от физических запасов на складе региона
+                let maxAvailable = countRealItems(region.vault_id, good);
                 let quantity = Math.min(10 + Math.floor(Math.random() * 20), Math.floor(maxAvailable * 0.1) || 10);
                 if (quantity < 1) quantity = 1;
                 
@@ -1916,20 +1944,49 @@ function processIntrigues() {
 
         if (intr.progress >= intr.requiredProgress) {
             if (intr.type === "assassination" && intr.targetRulerId && World.rulers[intr.targetRulerId]) {
-                World.rulers[intr.targetRulerId].health = 0;
-                World.rulers[intr.targetRulerId].stats.hp = 0;
-                generateWorldNews(`ТЕМНЫЕ ДЕЛА: Правитель ${World.rulers[intr.targetRulerId].name} убит в результате успешного покушения!`, "global", 5, 'war');
+                // Убийство правителя через покушение - физическое последствие
+                const targetRuler = World.rulers[intr.targetRulerId];
+                targetRuler.alive = false;
+                if (World.npcs[intr.targetRulerId]) World.npcs[intr.targetRulerId].isAlive = false;
+                generateWorldNews(`ТЕМНЫЕ ДЕЛА: Правитель ${targetRuler.name} убит в результате успешного покушения!`, "global", 5, 'war');
                 checkRulerDeaths();
             } else if (intr.type === "sabotage") {
-                                World.factions[intr.targetFactionId].stability -= 10; // ФИКС: Снижен урон стабильности от саботажа
-                generateWorldNews(`ДИВЕРСИЯ: Экономика ${World.factions[intr.targetFactionId]?.name} пострадала от саботажников.`, "global", 3, 'disaster');
+                // Саботаж уничтожает физические ресурсы на складе столицы
+                const targetFaction = World.factions[intr.targetFactionId];
+                const capitalRegionId = Object.keys(World.regions).find(rid => World.regions[rid].owner === intr.targetFactionId);
+                if (capitalRegionId) {
+                    const capitalVault = World.regions[capitalRegionId].vault_id;
+                    const weaponsDestroyed = Math.floor(countRealItems(capitalVault, 'weapons') * 0.3);
+                    const goldStolen = Math.floor(countRealItems(capitalVault, 'gold') * 0.2);
+                    consumeRealItems(capitalVault, 'weapons', weaponsDestroyed);
+                    consumeRealItems(capitalVault, 'gold', goldStolen);
+                    generateWorldNews(`ДИВЕРСИЯ: Экономика ${targetFaction?.name} пострадала от саботажников. Уничтожено ${weaponsDestroyed} ед. оружия, украдено ${goldStolen} золота.`, "global", 3, 'disaster');
+                }
             } else if (intr.type === "rebellion") {
-                                World.factions[intr.targetFactionId].stability -= 20; // ФИКС: Снижен урон стабильности от мятежа
-                generateWorldNews(`МЯТЕЖ: В землях ${World.factions[intr.targetFactionId]?.name} вспыхнуло восстание, спонсированное извне!`, "global", 5, 'war');
+                // Мятеж приводит к потере населения и ресурсов
+                const targetFaction = World.factions[intr.targetFactionId];
+                const rebelRegions = targetFaction.regions || [];
+                for (const rid of rebelRegions.slice(0, 2)) {
+                    const region = World.regions[rid];
+                    if (region) {
+                        region.population = Math.floor(region.population * 0.7);
+                        const weaponsLost = Math.floor(countRealItems(region.vault_id, 'weapons') * 0.4);
+                        consumeRealItems(region.vault_id, 'weapons', weaponsLost);
+                    }
+                }
+                generateWorldNews(`МЯТЕЖ: В землях ${targetFaction?.name} вспыхнуло восстание, спонсированное извне! Потеряно население и ресурсы.`, "global", 5, 'war');
             } else if (intr.type === "bribery") {
-                                World.factions[intr.targetFactionId].stability -= 5; // ФИКС: Снижен урон стабильности от подкупа
-                World.factions[intr.targetFactionId].resources.manpower.amount *= 0.9;
-                generateWorldNews(`КОРРУПЦИЯ: Генералы ${World.factions[intr.targetFactionId]?.name} были подкуплены. Армия деморализована.`, "global", 4, 'misc');
+                // Подкуп генералов приводит к краже оружия и еды
+                const targetFaction = World.factions[intr.targetFactionId];
+                const capitalRegionId = Object.keys(World.regions).find(rid => World.regions[rid].owner === intr.targetFactionId);
+                if (capitalRegionId) {
+                    const capitalVault = World.regions[capitalRegionId].vault_id;
+                    const weaponsStolen = Math.floor(countRealItems(capitalVault, 'weapons') * 0.25);
+                    const foodStolen = Math.floor(countRealItems(capitalVault, 'bread') * 0.3);
+                    consumeRealItems(capitalVault, 'weapons', weaponsStolen);
+                    consumeRealItems(capitalVault, 'bread', foodStolen);
+                    generateWorldNews(`КОРРУПЦИЯ: Генералы ${targetFaction?.name} были подкуплены. Украдено ${weaponsStolen} ед. оружия и ${foodStolen} ед. продовольствия. Армия деморализована.`, "global", 4, 'misc');
+                }
             } else if (intr.type === "marriage") {
                 World.factions[intr.targetFactionId].relations[intr.initiatorFactionId] = 100;
                 generateWorldNews(`СОЮЗ: Успешно организован династический брак между ${intr.initiatorFactionId} и ${intr.targetFactionId}!`, "global", 4, 'misc');
@@ -1942,9 +1999,10 @@ function processIntrigues() {
 function checkRulerDeaths() {
     for (let rId in World.rulers) {
         let r = World.rulers[rId];
-        if (r.alive && (r.health <= 0 || r.stats.hp <= 0)) {
+        // Правитель умирает только от покушения, голода или болезни (при отсутствии медикаментов)
+        if (r.alive && !r.heir && !World.npcs[rId]?.isAlive) {
+            // Правитель уже мертв от внешнего воздействия
             r.alive = false;
-            if (World.npcs[rId]) World.npcs[rId].isAlive = false;
             
             if (r.heir && World.rulers[r.heir]) {
                 let heir = World.rulers[r.heir];
@@ -1969,12 +2027,29 @@ function checkRulerDeaths() {
                 delete World.npcs[r.heir];
             } else {
                 generateWorldNews(`КРИЗИС: ${r.name} мертв, и наследников нет! Фракция погружается в хаос.`, "global", 5, 'disaster');
-                World.factions[r.factionId].stability -= 40;
+                // Вместо стабильности - физическое последствие: бунт уничтожает ресурсы столицы
+                const capitalRegionId = Object.keys(World.regions).find(rid => World.regions[rid].owner === r.factionId);
+                if (capitalRegionId) {
+                    const capitalVault = World.regions[capitalRegionId].vault_id;
+                    const weaponsLost = Math.floor(countRealItems(capitalVault, 'weapons') * 0.5);
+                    const goldLost = Math.floor(countRealItems(capitalVault, 'gold') * 0.3);
+                    consumeRealItems(capitalVault, 'weapons', weaponsLost);
+                    consumeRealItems(capitalVault, 'gold', goldLost);
+                }
             }
         } else if (r.alive) {
-            if (Math.random() < 0.02) {
-                r.health -= 1;
-                r.stats.hp -= 1;
+            // Правитель может умереть от голода если в столице нет еды
+            const capitalRegionId = Object.keys(World.regions).find(rid => World.regions[rid].owner === r.factionId);
+            if (capitalRegionId) {
+                const capitalVault = World.regions[capitalRegionId].vault_id;
+                const foodAvailable = countRealItems(capitalVault, 'bread') + countRealItems(capitalVault, 'meat');
+                const herbsAvailable = countRealItems(capitalVault, 'herbs');
+                // Если нет еды и медикаментов, правитель может заболеть и умереть
+                if (foodAvailable < 10 && herbsAvailable < 5 && Math.random() < 0.01) {
+                    r.alive = false;
+                    if (World.npcs[rId]) World.npcs[rId].isAlive = false;
+                    generateWorldNews(`Правитель ${r.name} умер от голода и болезней в столице!`, "global", 5, 'disaster');
+                }
             }
         }
     }
