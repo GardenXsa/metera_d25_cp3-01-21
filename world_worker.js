@@ -14,6 +14,74 @@ function consoleLog(...args) {
 const console = { log: consoleLog, warn: consoleLog, error: consoleLog };
 
 // ======================================================================
+// --- УТИЛИТЫ ДЛЯ РАБОТЫ С ФИЗИЧЕСКИМИ ПРЕДМЕТАМИ ---
+// ======================================================================
+
+// Возвращает общее количество предметов с данным prototype_id в контейнере
+function countRealItems(containerId, prototypeId) {
+    const cont = ContainerRegistry.get(containerId);
+    if (!cont) return 0;
+    return cont.items.reduce((sum, itemId) => {
+        const item = ItemRegistry.get(itemId);
+        return (item && item.prototype_id === prototypeId)
+            ? sum + item.stack_size
+            : sum;
+    }, 0);
+}
+
+// Потребляет указанное количество предметов из контейнера,
+// физически уменьшая stack_size или удаляя предметы.
+// Возвращает фактически взятое количество.
+function consumeRealItems(containerId, prototypeId, quantity) {
+    const cont = ContainerRegistry.get(containerId);
+    if (!cont) return 0;
+    let remaining = quantity;
+    let taken = 0;
+    for (const itemId of [...cont.items]) {
+        const item = ItemRegistry.get(itemId);
+        if (!item || item.prototype_id !== prototypeId) continue;
+        const take = Math.min(item.stack_size, remaining);
+        if (take > 0) {
+            CoreInventorySystem.removeItem(itemId, take);
+            remaining -= take;
+            taken += take;
+        }
+        if (remaining <= 0) break;
+    }
+    return taken;
+}
+
+// Создаёт предметы в контейнере. Возвращает массив созданных ID.
+function addRealItems(containerId, prototypeId, quantity, customProps = {}) {
+    const createdIds = [];
+    for (let i = 0; i < quantity; i++) {
+        const id = WorkerInventorySystem.createItem(prototypeId, 1, containerId, {
+            ...customProps,
+            name: getItemName(prototypeId, player?.era)
+        });
+        createdIds.push(id);
+    }
+    return createdIds;
+}
+
+// Оценивает доступную живую силу фракции на основе оружия и еды
+function availableManpower(faction) {
+    let total = 0;
+    for (let rid of faction.regions || []) {
+        const region = World.regions[rid];
+        if (!region || !region.vault_id) continue;
+        // солдаты = люди, имеющие оружие и не голодающие
+        const weapons = countRealItems(region.vault_id, 'weapons');
+        const food = countRealItems(region.vault_id, 'bread') + countRealItems(region.vault_id, 'meat') + countRealItems(region.vault_id, 'smoked_meat');
+        const population = region.population || 0;
+        const possibleSoldiers = Math.min(Math.floor(population * 0.1), weapons);
+        if (food < possibleSoldiers * 0.5) continue; // не хватает еды
+        total += possibleSoldiers;
+    }
+    return Math.floor(total);
+}
+
+// ======================================================================
 // --- ЯДРО СИМУЛЯЦИИ ЖИВОГО МИРА (WORLD SIMULATOR) ---
 // ======================================================================
 let ECONOMY_ITEMS = {};
@@ -446,11 +514,6 @@ function initWorldSimulator() {
         let bf = fConfig[fId];
         newWorld.factions[fId] = {
             name: bf.name,
-            resources: {
-                gold: { amount: bf.g[0] + Math.floor(Math.random() * (bf.g[1] - bf.g[0])), quality: 1.0 },
-                manpower: { amount: bf.m[0] + Math.floor(Math.random() * (bf.m[1] - bf.m[0])), quality: 1.0 }
-            },
-            stability: bf.stab - 10 + Math.floor(Math.random() * 20),
             relations: {}, diplomacy: {}, armies: []
         };
     }
@@ -472,11 +535,17 @@ function initWorldSimulator() {
         let isDwarf = ownerId === 'khazadrim';
         let isElf = ownerId === 'sylvanesti' || ownerId === 'greencode';
 
-        let regionResources = {};
-        let regionMarkets = {};
         let pop = 5000 + Math.floor(Math.random() * 45000);
+        let regionMarkets = {};
         
-        // Динамическая инициализация ВСЕХ ресурсов из базы
+        // Сначала создаем склад региона
+        const vaultId = WorkerInventorySystem.createContainer("faction_vault", ownerId, 999999, 1000, { region_id: key }, {
+            lock_data: { is_locked: true, difficulty: 16, trap: null },
+            physical_props: { health: 400, flammable: false },
+            custom_props: { required_rank: 1 }
+        });
+        
+        // Динамическая инициализация ВСЕХ ресурсов из базы как физические предметы
         for (let resKey in ECONOMY_ITEMS) {
             let baseAmount = Math.floor(Math.random() * 500);
             
@@ -494,19 +563,16 @@ function initWorldSimulator() {
             if (isElf && (resKey === 'wood' || resKey === 'herbs' || resKey === 'wheat')) baseAmount *= 2;
             if (isDwarf && (resKey === 'iron_ore' || resKey === 'gold_ore')) baseAmount *= 2;
             
-            regionResources[resKey] = { amount: baseAmount, quality: 1.0 + (Math.random() * 0.4 - 0.2), batches: [{ amount: baseAmount, day: 0 }] };
+            // Создаем физические предметы на складе
+            addRealItems(vaultId, resKey, baseAmount);
+            
             regionMarkets[resKey] = ECONOMY_ITEMS[resKey].basePrice;
         }
 
         newWorld.regions[key] = {
             name: loc.name, owner: ownerId, climate: "temperate",
-            vault_id: WorkerInventorySystem.createContainer("faction_vault", ownerId, 999999, 1000, { region_id: key }, {
-                lock_data: { is_locked: true, difficulty: 16, trap: null },
-                physical_props: { health: 400, flammable: false },
-                custom_props: { required_rank: 1 }
-            }),
+            vault_id: vaultId,
             population: pop,
-            resources: regionResources,
             moneySupply: 50000 + Math.floor(Math.random() * 100000),
             facilities: {
                 farms: { level: isElf ? 15 : Math.floor(Math.random() * 8), durability: 100 },
@@ -797,7 +863,7 @@ function simulateOneDay() {
         if (Math.random() < 0.4) World.weather[rId] = weathers[Math.floor(Math.random() * weathers.length)];
 
         // ПРИЧИННО-СЛЕДСТВЕННЫЕ БЕДСТВИЯ
-        let totalFood = (r.resources.bread?.amount || 0) + (r.resources.meat?.amount || 0) + (r.resources.fish?.amount || 0) + (r.resources.smoked_meat?.amount || 0);
+        let totalFood = countRealItems(r.vault_id, 'bread') + countRealItems(r.vault_id, 'meat') + countRealItems(r.vault_id, 'fish') + countRealItems(r.vault_id, 'smoked_meat');
         let foodPerCapita = totalFood / (r.population || 1);
         
         // Эпидемия: Высокий шанс, если много людей и мало еды (антисанитария и голод)
@@ -809,8 +875,11 @@ function simulateOneDay() {
         
         // Засуха/Пожар: Только летом или в жару
         if ((season === "summer" || World.weather[rId] === "Жара") && Math.random() < 0.02) {
-            if(r.resources.wheat) r.resources.wheat.amount = Math.floor(r.resources.wheat.amount * 0.2);
-            if(r.resources.wood) r.resources.wood.amount = Math.floor(r.resources.wood.amount * 0.3);
+            // Уничтожаем физические предметы пшеницы и древесины (80% и 70% соответственно)
+            const wheatAmount = countRealItems(r.vault_id, 'wheat');
+            const woodAmount = countRealItems(r.vault_id, 'wood');
+            consumeRealItems(r.vault_id, 'wheat', Math.floor(wheatAmount * 0.8));
+            consumeRealItems(r.vault_id, 'wood', Math.floor(woodAmount * 0.7));
             generateWorldNews(`Ужасающая засуха поразила ${r.name}. Урожай пшеницы погиб, леса горят.`, rId, 4, 'disaster');
         }
     }
@@ -827,19 +896,18 @@ function simulateOneDay() {
         let activeWorkers = Math.floor(totalWorkforce * employmentRate);
         let unemployed = totalWorkforce - activeWorkers;
 
-        // Налоги
+        // Налоги (золото теперь физический предмет)
         let faction = World.factions[r.owner];
         if (faction) {
             let taxRevenue = Math.floor(r.moneySupply * 0.02);
             r.moneySupply -= taxRevenue;
-            faction.resources.gold.amount += taxRevenue;
+            addRealItems(r.vault_id, 'gold', taxRevenue);
         }
         
         let weatherMod = (World.weather[rId] === "Ясно") ? 1.2 : (World.weather[rId] === "Гроза" || World.weather[rId] === "Снег" || World.weather[rId] === "Метель") ? 0.5 : 1.0;
         let workersPerSector = activeWorkers / Object.keys(r.facilities).length;
 
-        // Добыча сырья (с учетом партий и свежести)
-        
+        // Добыча сырья (создание физических предметов)
         let fert = (World && World.homeostasis) ? World.homeostasis.fertility : 1.0;
         let currentEra = (typeof player !== 'undefined' && player && player.era) ? player.era : 'rebirth';
         let facFarms = getFacilityName('farms', currentEra);
@@ -847,14 +915,16 @@ function simulateOneDay() {
         let facMines = getFacilityName('mines', currentEra);
 
         if(r.facilities.farms) {
-            addBatch(r.resources, 'wheat', Math.floor(workersPerSector * (r.facilities.farms.level / 5) * 5 * weatherMod * fert), currentDay, `Производство: ${facFarms} (${r.name})`);
-            addBatch(r.resources, 'cotton', Math.floor(workersPerSector * (r.facilities.farms.level / 15) * weatherMod * fert), currentDay, `Сбор сырья: ${facFarms} (${r.name})`);
-            addBatch(r.resources, 'herbs', Math.floor(workersPerSector * (r.facilities.farms.level / 20) * weatherMod * fert), currentDay, `Культивация: ${facFarms} (${r.name})`);
+            addRealItems(r.vault_id, 'wheat', Math.floor(workersPerSector * (r.facilities.farms.level / 5) * 5 * weatherMod * fert));
+            addRealItems(r.vault_id, 'cotton', Math.floor(workersPerSector * (r.facilities.farms.level / 15) * weatherMod * fert));
+            addRealItems(r.vault_id, 'herbs', Math.floor(workersPerSector * (r.facilities.farms.level / 20) * weatherMod * fert));
         }
-        if(r.facilities.lumbermills) addBatch(r.resources, 'wood', Math.floor(workersPerSector * (r.facilities.lumbermills.level / 10) * weatherMod), currentDay, `Производство: ${facLumb} (${r.name})`);
+        if(r.facilities.lumbermills) {
+            addRealItems(r.vault_id, 'wood', Math.floor(workersPerSector * (r.facilities.lumbermills.level / 10) * weatherMod));
+        }
         if(r.facilities.mines) {
-            addBatch(r.resources, 'iron_ore', Math.floor(workersPerSector * (r.facilities.mines.level / 10)), currentDay, `Добыча: ${facMines} (${r.name})`);
-            addBatch(r.resources, 'gold_ore', Math.floor(workersPerSector * (r.facilities.mines.level / 30)), currentDay, `Глубинная добыча: ${facMines} (${r.name})`);
+            addRealItems(r.vault_id, 'iron_ore', Math.floor(workersPerSector * (r.facilities.mines.level / 10)));
+            addRealItems(r.vault_id, 'gold_ore', Math.floor(workersPerSector * (r.facilities.mines.level / 30)));
         }
 
         // Износ и ремонт
@@ -865,14 +935,17 @@ function simulateOneDay() {
                 if (fac.durability < 0) fac.durability = 0;
                 if (fac.durability < 20) fac.level = Math.floor(fac.level * 0.5);
                 
-                if (fac.durability < 50 && r.resources.wood.amount > 5) {
-                    fac.durability += 20;
-                    r.resources.wood.amount -= 5;
+                if (fac.durability < 50) {
+                    const woodAvailable = countRealItems(r.vault_id, 'wood');
+                    if (woodAvailable >= 5) {
+                        fac.durability += 20;
+                        consumeRealItems(r.vault_id, 'wood', 5);
+                    }
                 }
             }
         }
 
-        // Крафт по рецептам
+        // Крафт по рецептам (физические предметы)
         for (let recipe of CRAFTING_RECIPES) {
             let fac = r.facilities[recipe.facility];
             if (!fac || fac.level <= 0) continue;
@@ -881,39 +954,30 @@ function simulateOneDay() {
             if (capacity <= 0) continue;
 
             let maxCrafts = capacity;
-            let totalInputQuality = 0;
-            let inputCount = 0;
 
+            // Проверяем доступность физических ингредиентов
             for (let inRes in recipe.inputs) {
-                let available = r.resources[inRes] ? r.resources[inRes].amount : 0;
+                let available = countRealItems(r.vault_id, inRes);
                 let requiredPerCraft = recipe.inputs[inRes];
                 let possibleCrafts = Math.floor(available / requiredPerCraft);
                 if (possibleCrafts < maxCrafts) maxCrafts = possibleCrafts;
-
-                if (r.resources[inRes]) {
-                    totalInputQuality += r.resources[inRes].quality;
-                    inputCount++;
-                }
             }
 
             if (maxCrafts > 0) {
-                let avgInputQuality = inputCount > 0 ? (totalInputQuality / inputCount) : 1.0;
-                let outputQuality = (avgInputQuality * 0.7) + ((fac.durability / 100) * 0.3);
-
+                // Потребляем физические ингредиенты
                 for (let inRes in recipe.inputs) {
-                    consumeBatch(r.resources, inRes, maxCrafts * recipe.inputs[inRes]);
+                    consumeRealItems(r.vault_id, inRes, maxCrafts * recipe.inputs[inRes]);
                 }
 
+                // Создаем физические продукты
                 for (let outRes in recipe.outputs) {
                     let produced = maxCrafts * recipe.outputs[outRes];
-                    let currentEra = (typeof player !== 'undefined' && player && player.era) ? player.era : 'rebirth';
-                    let facName = getFacilityName(recipe.facility, currentEra);
-                    addBatch(r.resources, outRes, produced, currentDay, `Производство: ${facName} (${r.name}, Ур.${fac.level})`);
+                    addRealItems(r.vault_id, outRes, produced);
                 }
             }
         }
 
-        // Потребление и Бунты
+        // Потребление населением (физические предметы)
         let fertCons = (World && World.homeostasis) ? World.homeostasis.fertility : 1.0;
         let foodConsumed = Math.floor((r.population * 0.02) / fertCons);
         let clothConsumed = Math.floor(r.population * 0.002);
@@ -921,47 +985,49 @@ function simulateOneDay() {
         let foodTypes = ['bread', 'meat', 'fish', 'smoked_meat'];
         for(let fType of foodTypes) {
             if(foodConsumed <= 0) break;
-            if(r.resources[fType] && r.resources[fType].amount > 0) {
-                let eaten = consumeBatch(r.resources, fType, foodConsumed);
+            const available = countRealItems(r.vault_id, fType);
+            if (available > 0) {
+                const eaten = consumeRealItems(r.vault_id, fType, foodConsumed);
                 foodConsumed -= eaten;
             }
         }
 
-        if(r.resources.clothes && r.resources.clothes.amount > 0) {
-            consumeBatch(r.resources, 'clothes', clothConsumed);
+        const clothesAvailable = countRealItems(r.vault_id, 'clothes');
+        if (clothesAvailable > 0) {
+            consumeRealItems(r.vault_id, 'clothes', clothConsumed);
         }
 
         // --- ПРИМЕНЕНИЕ ПОРЧИ И ГНИЕНИЯ (В КОНЦЕ ДНЯ) ---
-        processSpoilage(r.resources, currentDay, World.weather[rId]);
+        // processSpoilage(r.resources, currentDay, World.weather[rId]); // Отключаем для физической модели
 
-                // ДЕМОГРАФИЯ И ВОССТАНОВЛЕНИЕ (Анти-WW2 логика)
-        let foodPerCapitaAfter = (r.resources.bread?.amount || 0) / (r.population || 1);
+                // ДЕМОГРАФИЯ И ВОССТАНОВЛЕНИЕ
+        const breadAvailable = countRealItems(r.vault_id, 'bread');
+        let foodPerCapitaAfter = breadAvailable / (r.population || 1);
         if (foodPerCapitaAfter > 0.5 && employmentRate > 0.6) {
-            // В мирное и сытое время население растет, а стабильность восстанавливается
-            let growth = Math.floor(r.population * 0.0005); // Небольшой ежедневный прирост
+            // В мирное и сытое время население растет
+            let growth = Math.floor(r.population * 0.0005);
             r.population += growth;
-            if (faction && faction.stability < 90) faction.stability += 0.2;
         }
 
 
 // Голод и Бунты (Причина: нет еды или работы)
         if (foodConsumed > 0) {
-            let deaths = Math.floor(foodConsumed * 2); // Чем больше нехватка, тем больше смертей
+            let deaths = Math.floor(foodConsumed * 2);
             r.population -= deaths;
-            if (faction) faction.stability -= 2; // Голод бьет по стабильности фракции
-            if (Math.random() < 0.3) generateWorldNews(`Голод в ${r.name}! Нехватка продовольствия унесла ${deaths} жизней. Власть теряет авторитет.`, rId, 4, 'disaster');
+            // Вместо штрафа стабильности - физическое последствие: бунт может уничтожить ресурсы
+            if (Math.random() < 0.3) generateWorldNews(`Голод в ${r.name}! Нехватка продовольствия унесла ${deaths} жизней.`, rId, 4, 'disaster');
         }
 
         if (employmentRate < 0.4 && Math.random() < 0.1) {
             generateWorldNews(`Голодные бунты в ${r.name}! Безработные громят склады и кузницы.`, rId, 4, 'disaster');
-            if(r.resources.weapons) consumeBatch(r.resources, 'weapons', 100);
-            if(r.facilities.forges) r.facilities.forges.durability -= 30; // Бунтовщики ломают здания
-            if (faction) faction.stability -= 5;
+            const weaponsAvailable = countRealItems(r.vault_id, 'weapons');
+            consumeRealItems(r.vault_id, 'weapons', Math.min(100, weaponsAvailable));
+            if(r.facilities.forges) r.facilities.forges.durability -= 30;
         }
 
-        // Ценообразование
+        // Ценообразование на основе физических запасов
         for (let good in ECONOMY_ITEMS) {
-            let supply = r.resources[good] ? r.resources[good].amount : 0;
+            let supply = countRealItems(r.vault_id, good);
             if (supply < 1) supply = 1;
             let demand = r.population * 0.001;
             for(let recipe of CRAFTING_RECIPES) {
@@ -971,8 +1037,7 @@ function simulateOneDay() {
             if (demand < 1) demand = 1;
             
             let priceMod = Math.max(0.2, Math.min(5.0, demand / supply));
-            let qualityMod = r.resources[good] ? r.resources[good].quality : 1.0;
-            r.markets[good] = Math.max(1, Math.floor(ECONOMY_ITEMS[good].basePrice * priceMod * qualityMod));
+            r.markets[good] = Math.max(1, Math.floor(ECONOMY_ITEMS[good].basePrice * priceMod));
         }
     }
 
@@ -1013,9 +1078,12 @@ function simulateOneDay() {
                 if (destId === rId) continue;
                 let dest = World.regions[destId];
                 
-                // Если в стране анархия (стабильность < 30), купцы боятся собирать караваны
+                // Если в стране хаос (мало оружия и еды), купцы боятся собирать караваны
                 let originFaction = World.factions[r.owner];
-                if (originFaction && originFaction.stability < 30) continue;
+                const originVault = r.vault_id;
+                const originWeapons = originVault ? countRealItems(originVault, 'weapons') : 0;
+                const originFood = originVault ? (countRealItems(originVault, 'bread') + countRealItems(originVault, 'meat')) : 0;
+                if (originFaction && (originWeapons < 50 || originFood < 100)) continue;
 
                 // Караваны не едут во вражеские города (Эмбарго)
                 if (originFaction && originFaction.diplomacy[dest.owner] === 'war') continue;
@@ -1023,12 +1091,17 @@ function simulateOneDay() {
                 // Запрет на экспорт стратегических ресурсов при их нехватке
                 if (['bread', 'meat', 'wheat'].includes(good)) {
                     let dailyConsumption = r.population * 0.02;
-                    if (r.resources[good].amount < dailyConsumption * 5) continue;
+                    const available = countRealItems(r.vault_id, good);
+                    if (available < dailyConsumption * 5) continue;
                 }
-                if (good === 'weapons' && r.resources[good].amount < 300) continue;
+                if (good === 'weapons') {
+                    const available = countRealItems(r.vault_id, 'weapons');
+                    if (available < 300) continue;
+                }
 
                 let profitMargin = dest.markets[good] - localPrice;
-                if (profitMargin > localPrice * 0.3 && r.resources[good] && r.resources[good].amount > 50) {
+                const supply = countRealItems(r.vault_id, good);
+                if (profitMargin > localPrice * 0.3 && supply > 50) {
                     if (profitMargin > maxProfit) {
                         maxProfit = profitMargin;
                         bestDest = destId;
@@ -1038,17 +1111,18 @@ function simulateOneDay() {
 
             if (bestDest) {
                 let destRegion = World.regions[bestDest];
-                let amount = Math.floor(r.resources[good].amount * 0.2);
+                const supply = countRealItems(r.vault_id, good);
+                let amount = Math.floor(supply * 0.2);
                 let cost = amount * localPrice;
 
                 if (amount > 0) {
-                    let extractedBatches = extractBatches(r.resources, good, amount, `Погружено в караван (Цель: ${World.regions[bestDest].name})`, currentDay);
+                    // Потребляем физические предметы из склада
+                    consumeRealItems(r.vault_id, good, amount);
                     r.moneySupply += cost;
                     r.caravans.push({
                         id: "caravan_" + Date.now() + Math.floor(Math.random()*1000),
                         origin: rId, destination: bestDest, 
                         goods: { [good]: amount },
-                        goodsBatches: { [good]: extractedBatches },
                         buyPrice: localPrice, investment: cost, hoursLeft: 24 + Math.floor(Math.random() * 48)
                     });
                     
@@ -1100,9 +1174,10 @@ function simulateOneDay() {
         for (let rId of rKeys) {
             if (World.regions[rId].owner === fId) {
                 let r = World.regions[rId];
-                // Считаем ВСЮ еду, а не только хлеб
-                f.globalFood += (r.resources.bread?.amount || 0) + (r.resources.meat?.amount || 0) + (r.resources.fish?.amount || 0) + (r.resources.wheat?.amount || 0);
-                f.globalWeapons += r.resources.weapons?.amount || 0;
+                // Считаем ВСЮ еду через физические предметы на складе региона
+                f.globalFood += countRealItems(r.vault_id, 'bread') + countRealItems(r.vault_id, 'meat') 
+                              + countRealItems(r.vault_id, 'fish') + countRealItems(r.vault_id, 'wheat');
+                f.globalWeapons += countRealItems(r.vault_id, 'weapons');
                 f.totalPopulation += r.population || 0;
                 regionCount++;
             }
@@ -1115,47 +1190,72 @@ function simulateOneDay() {
         if (!f.diplomacy) f.diplomacy = {};
         
         // 1. ЭКОНОМИКА: Зарплаты армии и содержание государства
-                // ФИКС ЭКОНОМИКИ: Базовый пассивный доход и рекрутинг, чтобы фракции не вымирали
-        f.resources.gold.amount += f.regionCount * 500;
-        f.resources.manpower.amount += Math.floor(f.totalPopulation * 0.005);
+        // В физической модели золото лежит на складах, а не в абстрактном поле
+        
+        // Считаем общее золото фракции (сумма по всем регионам)
+        let totalGold = 0;
+        for (let rId of f.regions || []) {
+            const region = World.regions[rId];
+            if (region && region.vault_id) {
+                totalGold += countRealItems(region.vault_id, 'gold');
+            }
+        }
+        
+        // Пассивный доход - добавляем физическое золото в столичный регион
+        const capitalRegionId = Object.keys(World.regions).find(rid => World.regions[rid].owner === fId);
+        if (capitalRegionId) {
+            const passiveIncome = f.regionCount * 500;
+            addRealItems(World.regions[capitalRegionId].vault_id, 'gold', passiveIncome);
+        }
 
-        let armyUpkeep = Math.floor(f.resources.manpower.amount * 0.01); // ФИКС: Содержание армии снижено
-        let stateUpkeep = f.regionCount * 100; // Минимальные гос. расходы
+        // Расходы на армию и государство (уничтожаем золото пропорционально расходам)
+        let armyUpkeep = Math.floor(f.globalWeapons * 0.5); // Содержание зависит от количества оружия
+        let stateUpkeep = f.regionCount * 100;
         let totalExpenses = armyUpkeep + stateUpkeep;
 
-        if (f.resources.gold.amount >= totalExpenses) {
-            f.resources.gold.amount -= totalExpenses;
-        } else {
-            // ДЕФОЛТ: Денег нет
-            f.resources.gold.amount = 0;
-                        if (f.stability > 20) f.stability -= 0.5; // ФИКС: Штраф за банкротство снижен
-                        f.resources.manpower.amount = Math.floor(f.resources.manpower.amount * 0.98); // ФИКС: Дезертирство замедлено
+        // Уничтожаем золото на сумму расходов (пропорционально распределенное по регионам)
+        let goldToRemove = totalExpenses;
+        for (let rId of f.regions || []) {
+            if (goldToRemove <= 0) break;
+            const region = World.regions[rId];
+            if (region && region.vault_id) {
+                const regionGold = countRealItems(region.vault_id, 'gold');
+                const toRemove = Math.min(regionGold, goldToRemove);
+                if (toRemove > 0) {
+                    consumeRealItems(region.vault_id, 'gold', toRemove);
+                    goldToRemove -= toRemove;
+                }
+            }
+        }
+        
+        // Если золота не хватило на расходы - дезертирство (потеря оружия)
+        if (goldToRemove > 0) {
+            for (let rId of f.regions || []) {
+                if (goldToRemove <= 0) break;
+                const region = World.regions[rId];
+                if (region && region.vault_id) {
+                    const weaponsAvailable = countRealItems(region.vault_id, 'weapons');
+                    const toRemove = Math.min(weaponsAvailable, Math.floor(goldToRemove / 10)); // 1 оружие = 10 золота
+                    if (toRemove > 0) {
+                        consumeRealItems(region.vault_id, 'weapons', toRemove);
+                        goldToRemove -= toRemove * 10;
+                    }
+                }
+            }
         }
 
         // 2. ЛИМИТ АРМИИ: Нельзя бесконечно копить войска
-        let maxManpower = Math.floor(f.totalPopulation * 0.15); // Максимум 15% населения могут быть солдатами
-        if (f.resources.manpower.amount < maxManpower && f.globalFood > f.resources.manpower.amount) {
-            f.resources.manpower.amount += Math.floor(f.totalPopulation * 0.001); // Призыв зависит от населения
-        }
+        // Живая сила вычисляется динамически через availableManpower()
         
-        // 3. СТАБИЛЬНОСТЬ: Зависит от еды на душу населения
+        // 3. Проверка на голод (физические последствия)
         let foodPerCapita = f.globalFood / (f.totalPopulation || 1);
-                if (foodPerCapita < 0.2) f.stability -= 1; // ФИКС: Штраф за голод снижен
-                        else if (f.resources.gold.amount > 1000 && !Object.values(f.diplomacy).includes("war")) f.stability += 1.5; // ФИКС: В мирное время стабильность уверенно растет
-        
-        f.stability = Math.max(0, Math.min(100, f.stability));
-
-        if (f.stability < 20 && Math.random() < 0.1 && (currentDay - (f.lastCoupDay || -999) > 360)) {
-            f.lastCoupDay = currentDay; // Кульдаун: 1 революция в год максимум
-            generateWorldNews(`Государственный переворот! В землях фракции ${f.name} власть рушится из-за нищеты и голода.`, "global", 5, 'war');
-            f.stability = 75; // Новая власть получает высокий кредит доверия
-            f.resources.gold.amount += 50000; // Тотальная экспроприация имущества старой элиты для спасения экономики
-            f.resources.manpower.amount = Math.floor(f.resources.manpower.amount * 0.3); // Значительная часть армии распускается, чтобы убрать дефицит бюджета
-            // Отменяем все текущие войны (новая власть мирится со всеми)
-            for (let target in f.diplomacy) {
-                if (f.diplomacy[target] === "war") {
-                    f.diplomacy[target] = "neutral";
-                    if (World.factions[target]) World.factions[target].diplomacy[fId] = "neutral";
+        if (foodPerCapita < 0.2) {
+            // Голод приводит к смертям населения в регионах
+            for (let rId of f.regions || []) {
+                const region = World.regions[rId];
+                if (region && region.population) {
+                    const deaths = Math.floor(region.population * 0.001);
+                    region.population -= deaths;
                 }
             }
         }
@@ -1171,9 +1271,13 @@ function simulateOneDay() {
             // Зависть: Если мы голодаем, а они богаты едой -> ненависть
             if (f.globalFood < 500 && targetFaction.globalFood > 3000) change -= 5;
             // Угроза: Если у них огромная армия, а у нас маленькая -> страх и ухудшение отношений
-            if (targetFaction.resources.manpower.amount > f.resources.manpower.amount * 3) change -= 2;
-            // Торговля сближает: Если стабильность обеих высока -> отношения теплеют
-            if (f.stability > 70 && targetFaction.stability > 70) change += 2;
+            const targetManpower = availableManpower(targetFaction);
+            const myManpower = availableManpower(f);
+            if (targetManpower > myManpower * 3) change -= 2;
+            // Торговля сближает: Если у обеих фракций много ресурсов -> отношения теплеют
+            const myGold = countRealItems(Object.keys(World.regions).find(rid => World.regions[rid].owner === fId)?.vault_id || null, 'gold');
+            const targetGold = countRealItems(Object.keys(World.regions).find(rid => World.regions[rid].owner === targetF)?.vault_id || null, 'gold');
+            if (myGold > 5000 && targetGold > 5000) change += 2;
             
             if (currentStatus === "war") change -= 5;
             
@@ -1181,10 +1285,10 @@ function simulateOneDay() {
             rel = f.relations[targetF];
 
                         // ОБЪЯВЛЕНИЕ ВОЙНЫ (С УЧЕТОМ ВОЕННОЙ УСТАЛОСТИ МИРА)
-                        let canFight = f.globalWeapons > 100 && f.resources.manpower.amount > 2000; // ФИКС: Снижен порог для начала войны
+                        let canFight = f.globalWeapons > 100 && myManpower > 2000; // ФИКС: Снижен порог для начала войны
             let warWeariness = (World && World.homeostasis) ? World.homeostasis.warWeariness : 0;
             let warThreshold = Math.random() * 100;
-            if (rel < -80 && currentStatus !== "war" && canFight && f.stability > 40 && warWeariness < warThreshold) {
+            if (rel < -80 && currentStatus !== "war" && canFight && f.globalFood > 1000 && warWeariness < warThreshold) {
                 f.diplomacy[targetF] = "war";
                 targetFaction.diplomacy[fId] = "war";
                 let reason = f.globalFood < 2000 ? "из-за острой нехватки продовольствия (война за выживание)" : "из-за давней кровной вражды";
@@ -1192,10 +1296,10 @@ function simulateOneDay() {
             }
             // ЗАКЛЮЧЕНИЕ МИРА (С УЧЕТОМ ВОЕННОЙ УСТАЛОСТИ МИРА)
             else if (currentStatus === "war") {
-                // Мир заключается, если армия истощена, стабильность падает, или война идет слишком долго (включая мировую усталость)
+                // Мир заключается, если армия истощена, или война идет слишком долго (включая мировую усталость)
                 let peaceChance = 0.03 + (((World && World.homeostasis) ? World.homeostasis.warWeariness : 0) / 1000);
-                                // ФИКС: Войны длятся дольше. Мир заключается только при полном истощении или критической нестабильности (<15)
-                if ((f.resources.manpower.amount < 500 && targetFaction.resources.manpower.amount < 500) || f.stability < 15 || Math.random() < (peaceChance * 0.1)) {
+                                // ФИКС: Войны длятся дольше. Мир заключается только при полном истощении
+                if ((myManpower < 500 && targetManpower < 500) || Math.random() < (peaceChance * 0.1)) {
                     f.diplomacy[targetF] = "neutral";
                     targetFaction.diplomacy[fId] = "neutral";
                     // Принудительный сброс отношений в нейтралитет, чтобы не начать войну завтра же
@@ -1205,7 +1309,7 @@ function simulateOneDay() {
                 }
             }
             // ЗАКЛЮЧЕНИЕ МИРА (Если истощены)
-            else if (rel > -20 && currentStatus === "war" && (f.globalWeapons < 100 || f.resources.manpower.amount < 100)) {
+            else if (rel > -20 && currentStatus === "war" && (f.globalWeapons < 100 || myManpower < 100)) {
                 f.diplomacy[targetF] = "neutral";
                 targetFaction.diplomacy[fId] = "neutral";
                 generateWorldNews(`Истощенные войной, ${f.name} и ${targetFaction.name} подписали мирный договор.`, "global", 5, 'war');
@@ -1216,28 +1320,37 @@ function simulateOneDay() {
         let atWarWith = Object.keys(f.diplomacy).find(k => f.diplomacy[k] === "war");
         
                 if (atWarWith) {
-            // Ищем регион, где есть хотя бы базовое количество оружия (снижено со 100 до 50 для мелких стычек)
-                        let homeRegionId = Object.keys(World.regions).find(r => World.regions[r].owner === fId && World.regions[r].resources.weapons?.amount > 10);
+            // Ищем регион, где есть хотя бы базовое количество оружия
+                        let homeRegionId = Object.keys(World.regions).find(r => {
+                            const region = World.regions[r];
+                            if (region.owner !== fId || !region.vault_id) return false;
+                            const weapons = countRealItems(region.vault_id, 'weapons');
+                            return weapons > 10;
+                        });
             
-            // Армия собирается, если есть хотя бы 100 рекрутов (убрана жесткая заглушка 500)
-                        if (homeRegionId && f.resources.manpower.amount > 500) { // ФИКС: Армии собираются реже, но крупнее
+            // Армия собирается, если есть доступная живая сила
+            const availableMP = availableManpower(f);
+                        if (homeRegionId && availableMP > 500) {
                 let homeRegion = World.regions[homeRegionId];
                 let targetRegionId = Object.keys(World.regions).find(r => World.regions[r].owner === atWarWith);
                 
                 let alreadyAttacking = f.armies.some(a => a.destination === targetRegionId);
                 
                 if (targetRegionId && !alreadyAttacking) {
-                    // Динамический размер армии: от 15% до 35% доступных рекрутов
-                    let armySize = Math.floor(f.resources.manpower.amount * (0.15 + Math.random() * 0.20));
-                    if (armySize < 100) armySize = f.resources.manpower.amount; // Если людей мало, идут все
+                    // Динамический размер армии: от 15% до 35% доступной живой силы
+                    let armySize = Math.floor(availableMP * (0.15 + Math.random() * 0.20));
+                    if (armySize < 100) armySize = availableMP;
 
-                    // Логистика: 1 оружие на солдата, 2 ед. еды на солдата
-                    let weaponsToTake = Math.min(armySize, homeRegion.resources.weapons.amount);
-                    let foodToTake = Math.min(armySize * 2, homeRegion.resources.bread?.amount || 0);
+                    // Логистика: берем оружие и еду из склада региона
+                    const weaponsAvailable = countRealItems(homeRegion.vault_id, 'weapons');
+                    const foodAvailable = countRealItems(homeRegion.vault_id, 'bread') + countRealItems(homeRegion.vault_id, 'meat');
                     
-                    consumeBatch(homeRegion.resources, 'weapons', weaponsToTake);
-                    if(homeRegion.resources.bread) consumeBatch(homeRegion.resources, 'bread', foodToTake);
-                    f.resources.manpower.amount -= armySize;
+                    let weaponsToTake = Math.min(armySize, weaponsAvailable);
+                    let foodToTake = Math.min(armySize * 2, foodAvailable);
+                    
+                    consumeRealItems(homeRegion.vault_id, 'weapons', weaponsToTake);
+                    consumeRealItems(homeRegion.vault_id, 'bread', Math.floor(foodToTake * 0.7));
+                    consumeRealItems(homeRegion.vault_id, 'meat', Math.floor(foodToTake * 0.3));
                     
                     // Расчет морали в зависимости от обеспечения
                     let armyMorale = 100;
@@ -1302,9 +1415,12 @@ function simulateOneDay() {
                     generateWorldNews(`Армия ${f.name} взяла в осаду ${targetRegion.name}! Город отрезан от поставок.`, targetLoc, 4, 'war');
                 } else if (army.siegeDays > 0) {
                     army.siegeDays--;
-                    // РАЗРУШЕНИЯ ОТ ОСАДЫ
+                    // РАЗРУШЕНИЯ ОТ ОСАДЫ: потребление еды из склада города
                     targetRegion.population -= Math.floor(Math.random() * 200);
-                    if(targetRegion.resources.bread) consumeBatch(targetRegion.resources, 'bread', Math.floor(targetRegion.resources.bread.amount * 0.2)); // Сжигают амбары
+                    const cityBread = countRealItems(targetRegion.vault_id, 'bread');
+                    if (cityBread > 0) {
+                        consumeRealItems(targetRegion.vault_id, 'bread', Math.floor(cityBread * 0.2)); // Сжигают амбары
+                    }
                     if(targetRegion.facilities.farms) targetRegion.facilities.farms.durability -= 10;
                 } else if (army.siegeDays === 0) {
                     let garrisonPower = (targetRegion.population / 100) + (targetRegion.facilities.farms?.level || 0 * 10);
@@ -1312,8 +1428,15 @@ function simulateOneDay() {
                     
                     if (atkPower > garrisonPower) {
                         targetRegion.owner = fId;
-                        // ГРАБЕЖ ПРИ ЗАХВАТЕ
-                        f.resources.gold.amount += targetRegion.moneySupply * 0.5;
+                        // ГРАБЕЖ ПРИ ЗАХВАТЕ: перемещаем золото физически
+                        const targetVault = targetRegion.vault_id;
+                        const capitalRegionId = Object.keys(World.regions).find(rid => World.regions[rid].owner === fId);
+                        if (capitalRegionId && targetVault) {
+                            const goldAmount = countRealItems(targetVault, 'gold');
+                            const tribute = Math.floor(goldAmount * 0.5);
+                            consumeRealItems(targetVault, 'gold', tribute);
+                            addRealItems(World.regions[capitalRegionId].vault_id, 'gold', tribute);
+                        }
                         targetRegion.moneySupply *= 0.5;
                         generateWorldNews(`ШТУРМ УСПЕШЕН! После жестокой осады ${targetRegion.name} пал под натиском ${f.name}! Город разграблен.`, targetLoc, 5, 'war');
                         isCombatActive = false;
@@ -1326,7 +1449,15 @@ function simulateOneDay() {
             }
             
             if (armySurvived && f.armies[i] && !isCombatActive) {
-                f.resources.manpower.amount += f.armies[i].size;
+                // Возвращаем оружие обратно в регион при возвращении армии
+                const homeRegionId = army.location;
+                if (homeRegionId && World.regions[homeRegionId]) {
+                    // Возвращаем оставшееся оружие (упрощенно: считаем что вернулось 80% оружия)
+                    const returnedWeapons = Math.floor(army.size * 0.8);
+                    if (returnedWeapons > 0) {
+                        addRealItems(World.regions[homeRegionId].vault_id, 'weapons', returnedWeapons);
+                    }
+                }
                 f.armies.splice(i, 1);
             }
         }
@@ -1518,8 +1649,11 @@ async function runWorldSimulationTick() {
         let activeWars = [];
         for (let fId in World.factions) {
             let f = World.factions[fId];
-            let gold = f.resources.gold ? Math.floor(f.resources.gold.amount) : 0;
-            worldSummary += `Фракция: ${f.name}. Стабильность: ${f.stability}/100. Золото: ${gold}. Армий в походе СЕЙЧАС: ${f.armies.length}.\n`;
+            // Считаем золото физически из столичного региона
+            const capitalRegionId = Object.keys(World.regions).find(rid => World.regions[rid].owner === fId);
+            const gold = capitalRegionId ? countRealItems(World.regions[capitalRegionId].vault_id, 'gold') : 0;
+            const manpower = availableManpower(f);
+            worldSummary += `Фракция: ${f.name}. Доступная живая сила: ${manpower}. Золото в столице: ${gold}. Армий в походе СЕЙЧАС: ${f.armies.length}.\n`;
             for (let target in f.diplomacy) {
                 if (f.diplomacy[target] === "war") activeWars.push(`${f.name} воюет с ${World.factions[target].name}`);
             }
@@ -1656,26 +1790,52 @@ function processRulerDiplomacy() {
             continue;
         }
 
-        let security = faction.stability + (faction.armies.length * 10);
-        let wealth = faction.resources.gold.amount;
-        let power = faction.resources.manpower.amount;
+        // Оценка состояния фракции на основе физических ресурсов
+        // "Безопасность" теперь зависит от наличия оружия и еды в регионах
+        let totalWeapons = 0;
+        let totalFood = 0;
+        for (let rid of faction.regions || []) {
+            const region = World.regions[rid];
+            if (region && region.vault_id) {
+                totalWeapons += countRealItems(region.vault_id, 'weapons');
+                totalFood += countRealItems(region.vault_id, 'bread');
+            }
+        }
+        let security = (totalWeapons > 100 ? 50 : totalWeapons) + (faction.armies.length * 10);
+        
+        // Богатство = золото в столичном складе
+        const capitalRegionId = Object.keys(World.regions).find(rid => World.regions[rid].owner === ruler.factionId);
+        const capitalVault = capitalRegionId ? World.regions[capitalRegionId].vault_id : null;
+        let wealth = capitalVault ? countRealItems(capitalVault, 'gold') : 0;
+        
+        // Живая сила = доступное население с оружием
+        let power = availableManpower(faction);
 
         // УМНЫЙ ИИ ФРАКЦИЙ: Принимают решения чаще (15% шанс в день вместо 2%)
         if (Math.random() < 0.15) { 
             let targetF = fKeys[Math.floor(Math.random() * fKeys.length)];
             if (targetF === ruler.factionId) continue;
             let targetFaction = World.factions[targetF];
-            let targetPower = targetFaction.resources.manpower.amount;
+            let targetPower = availableManpower(targetFaction);
 
             // 1. ОЦЕНКА УГРОЗЫ И КОАЛИЦИИ
             if (targetPower > power * 2 && targetFaction.diplomacy[ruler.factionId] === "war") {
                 // Враг слишком силен. Ищем союзников или сдаемся.
-                if (faction.stability < 30 || power < 1000) {
+                if (security < 30 || power < 1000) {
                     ruler.currentGoal = { type: "surrender", targetFactionId: targetF };
                     faction.diplomacy[targetF] = "neutral";
                     targetFaction.diplomacy[ruler.factionId] = "neutral";
-                    faction.resources.gold.amount = Math.floor(faction.resources.gold.amount * 0.5); // Выплата контрибуции
-                    targetFaction.resources.gold.amount += faction.resources.gold.amount;
+                    // Выплата контрибуции физическим золотом
+                    if (capitalVault) {
+                        const goldAmount = countRealItems(capitalVault, 'gold');
+                        const tribute = Math.floor(goldAmount * 0.5);
+                        consumeRealItems(capitalVault, 'gold', tribute);
+                        // Добавляем золото победителю (в его столицу)
+                        const targetCapitalId = Object.keys(World.regions).find(rid => World.regions[rid].owner === targetF);
+                        if (targetCapitalId) {
+                            addRealItems(World.regions[targetCapitalId].vault_id, 'gold', tribute);
+                        }
+                    }
                     generateWorldNews(`КАПИТУЛЯЦИЯ: Осознав неизбежность краха, ${ruler.name} подписал унизительный мир с ${targetFaction.name}, выплатив огромную контрибуцию.`, "global", 5, 'war');
                     continue;
                 }
@@ -1684,7 +1844,7 @@ function processRulerDiplomacy() {
             // 2. АГРЕССИЯ (Только если мы сильнее или очень амбициозны)
             if (ruler.personality.cruelty > 60 && power > targetPower * 1.2 && ruler.personality.ambition > 50) {
                 let warWeary = (typeof World !== 'undefined' && World.homeostasis) ? World.homeostasis.warWeariness : 0;
-                if (warWeary < 50 && faction.stability > 50) {
+                if (warWeary < 50 && security > 50) {
                     ruler.currentGoal = { type: "declare_war", targetFactionId: targetF };
                     if (faction.diplomacy[targetF] !== "war") {
                         faction.diplomacy[targetF] = "war";
@@ -1714,7 +1874,10 @@ function processRulerDiplomacy() {
             else if (ruler.personality.stewardship > 50 && wealth < 10000) {
                 ruler.currentGoal = { type: "trade_pact", targetFactionId: targetF };
                 faction.relations[targetF] += 10;
-                faction.resources.gold.amount += 2000;
+                // Торговое соглашение приносит физическое золото
+                if (capitalVault) {
+                    addRealItems(capitalVault, 'gold', 2000);
+                }
                 generateWorldNews(`ЭКОНОМИКА: ${ruler.name} заключает выгодное торговое соглашение с ${targetFaction.name}.`, "global", 2, 'misc');
             }
             // 5. ДИПЛОМАТИЯ И БРАКИ
