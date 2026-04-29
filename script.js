@@ -777,8 +777,9 @@ const TradeSystem = {
                 if (tradeValueGold > 0) {
                     const tax = Math.max(1, Math.floor(tradeValueGold * 0.05));
                     region.moneySupply += tax;
-                    if (factionId && World.factions?.[factionId]?.resources?.gold) {
-                        World.factions[factionId].resources.gold.amount += tax;
+                    // Добавляем физическое золото в склад региона
+                    if (factionId && region.vault_id) {
+                        addRealItems(region.vault_id, 'gold', tax);
                     }
                 }
 
@@ -1041,8 +1042,14 @@ async function runWorldSimulationTick() {
         let activeWars = [];
         for (let fId in World.factions) {
             let f = World.factions[fId];
-            let gold = f.resources.gold ? Math.floor(f.resources.gold.amount) : 0;
-            worldSummary += `Фракция: ${f.name}. Стабильность: ${f.stability}/100. Золото: ${gold}. Армий в походе СЕЙЧАС: ${f.armies.length}.\n`;
+            // Золото считаем из физических запасов столичного региона
+            const capitalRegionId = Object.keys(World.regions).find(rid => World.regions[rid].owner === fId);
+            let gold = 0;
+            if (capitalRegionId && World.regions[capitalRegionId]?.vault_id) {
+                gold = countRealItems(World.regions[capitalRegionId].vault_id, 'gold');
+            }
+            const manpower = availableManpower(f);
+            worldSummary += `Фракция: ${f.name}. Доступная живая сила: ${manpower}. Золото в столице: ${gold}. Армий в походе СЕЙЧАС: ${f.armies.length}.\n`;
             for (let target in f.diplomacy) {
                 if (f.diplomacy[target] === "war") activeWars.push(`${f.name} воюет с ${World.factions[target].name}`);
             }
@@ -5703,7 +5710,8 @@ function updateTradeJournalDisplay() {
 
     // Выводим только те товары, которые реально есть на рынке или производятся
     for(let good in prices) {
-        if(region.resources[good] && region.resources[good].amount > 0) {
+        const supply = countRealItems(region.vault_id, good);
+        if (supply > 0) {
             html += formatPrice(good, prices[good]);
         }
     }
@@ -8952,7 +8960,18 @@ if (player.nexusData && player.nexusData[args.id]) {
                 break;
             case 'overthrowRuler':
                 if (args.factionId && World.factions[args.factionId]) {
-                    World.factions[args.factionId].stability -= 50;
+                    // Вместо стабильности - физическое последствие: бунт уничтожает ресурсы столицы
+                    const capitalRegionId = Object.keys(World.regions).find(rid => World.regions[rid].owner === args.factionId);
+                    if (capitalRegionId && World.regions[capitalRegionId]?.vault_id) {
+                        const capitalVault = World.regions[capitalRegionId].vault_id;
+                        const weaponsLost = Math.floor(countRealItems(capitalVault, 'weapons') * 0.3);
+                        const foodLost = Math.floor(countRealItems(capitalVault, 'bread') * 0.5);
+                        consumeRealItems(capitalVault, 'weapons', weaponsLost);
+                        consumeRealItems(capitalVault, 'bread', foodLost);
+                        generateWorldNews(`МЯТЕЖ! В землях ${World.factions[args.factionId].name} вспыхнуло восстание! Уничтожено запасов: ${weaponsLost} оружия, ${foodLost} еды.`, "global", 5, 'war');
+                    } else {
+                        generateWorldNews(`МЯТЕЖ! В землях ${World.factions[args.factionId].name} вспыхнуло восстание!`, "global", 5, 'war');
+                    }
                     generateWorldNews(`МЯТЕЖ! В землях ${World.factions[args.factionId].name} вспыхнуло восстание!`, "global", 5, 'war');
                     feedback = `[Мятеж] Инициирован бунт во фракции '${args.factionId}'.`;
                 }
@@ -9031,9 +9050,17 @@ if (player.nexusData && player.nexusData[args.id]) {
                 break;
             case 'overthrowRuler':
                 if (args.factionId && World.factions[args.factionId]) {
-                    World.factions[args.factionId].stability -= 50;
+                    // Вместо стабильности - физическое последствие: бунт уничтожает ресурсы столицы
+                    const capitalRegionId = Object.keys(World.regions).find(rid => World.regions[rid].owner === args.factionId);
+                    if (capitalRegionId) {
+                        const capitalVault = World.regions[capitalRegionId].vault_id;
+                        const weaponsLost = Math.floor(countRealItems(capitalVault, 'weapons') * 0.3);
+                        const foodLost = Math.floor(countRealItems(capitalVault, 'bread') * 0.5);
+                        consumeRealItems(capitalVault, 'weapons', weaponsLost);
+                        consumeRealItems(capitalVault, 'bread', foodLost);
+                    }
                     generateWorldNews(`МЯТЕЖ! В землях ${World.factions[args.factionId].name} вспыхнуло восстание!`, "global", 5, 'war');
-                    feedback = `[Мятеж] Инициирован бунт во фракции '${args.factionId}'.`;
+                    feedback = `[Мятеж] Инициирован бунт во фракции '${args.factionId}'. Ресурсы столицы разграблены!`;
                 }
                 break;
             case 'setFactionGoal':
@@ -9426,20 +9453,29 @@ case 'setEntityBinding':
                     let priceBuy = regBuy.markets[goodBuy] || 1;
                     let costBuy = priceBuy * qtyBuy;
 
-                    if (!regBuy.resources[goodBuy] || regBuy.resources[goodBuy].amount < qtyBuy) {
+                    // Проверяем наличие физического товара и золота в складе региона
+                    const supply = countRealItems(regBuy.vault_id, goodBuy);
+                    const goldAvailable = countRealItems(regBuy.vault_id, 'gold');
+                    
+                    if (supply < qtyBuy) {
                         feedback = `[Экономика] Отказ: В ${regBuy.name} нет столько ${goodBuy}.`; break;
                     }
-                    if (facBuy.resources.gold.amount < costBuy) {
+                    if (goldAvailable < costBuy) {
                         feedback = `[Экономика] Отказ: У фракции ${facBuy.name} нет ${costBuy} золота.`; break;
                     }
 
-                    facBuy.resources.gold.amount -= costBuy;
+                    // Изъямаем золото и товар, добавляем товар на склад фракции (в столицу)
+                    consumeRealItems(regBuy.vault_id, goodBuy, qtyBuy);
+                    consumeRealItems(regBuy.vault_id, 'gold', costBuy);
+                    
+                    const capitalRegionId = Object.keys(World.regions).find(rid => World.regions[rid].owner === args.factionId);
+                    if (capitalRegionId) {
+                        addRealItems(World.regions[capitalRegionId].vault_id, goodBuy, qtyBuy);
+                    }
+                    
                     regBuy.moneySupply += costBuy;
-                    regBuy.resources[goodBuy].amount -= qtyBuy;
-                    if (!facBuy.resources[goodBuy]) facBuy.resources[goodBuy] = { amount: 0, quality: 1.0 };
-                    facBuy.resources[goodBuy].amount += qtyBuy;
-
-                    if (qtyBuy / (regBuy.resources[goodBuy].amount + qtyBuy) > 0.2) {
+                    
+                    if (qtyBuy / (supply + qtyBuy) > 0.2) {
                         regBuy.markets[goodBuy] = Math.floor(priceBuy * 1.15);
                     }
                     feedback = `[Экономика] Фракция ${facBuy.name} закупила ${qtyBuy} ${goodBuy} в ${regBuy.name} за ${costBuy} з.`;
@@ -9457,21 +9493,33 @@ case 'setEntityBinding':
                     let qtySell = parseInt(args.quantity) || 0;
                     if (!facSell || !regSell || qtySell <= 0) { feedback = `[ERROR] gmSellGoods: Неверные аргументы.`; break; }
                     
-                    if (!facSell.resources[goodSell] || facSell.resources[goodSell].amount < qtySell) {
+                    // Проверяем наличие физического товара у фракции (в её столице)
+                    const capitalRegionId = Object.keys(World.regions).find(rid => World.regions[rid].owner === args.factionId);
+                    let supply = 0;
+                    if (capitalRegionId) {
+                        supply = countRealItems(World.regions[capitalRegionId].vault_id, goodSell);
+                    }
+                    
+                    if (supply < qtySell) {
                         feedback = `[Экономика] Отказ: У фракции ${facSell.name} нет столько ${goodSell}.`; break;
                     }
                     
                     let priceSell = regSell.markets[goodSell] || 1;
                     let revenueSell = priceSell * qtySell;
 
-                    facSell.resources[goodSell].amount -= qtySell;
-                    if (!regSell.resources[goodSell]) regSell.resources[goodSell] = { amount: 0, quality: 1.0 };
-                    regSell.resources[goodSell].amount += qtySell;
+                    // Изъямаем товар из столицы фракции и добавляем в регион продажи
+                    if (capitalRegionId) {
+                        consumeRealItems(World.regions[capitalRegionId].vault_id, goodSell, qtySell);
+                    }
+                    addRealItems(regSell.vault_id, goodSell, qtySell);
                     
                     regSell.moneySupply = Math.max(0, regSell.moneySupply - revenueSell);
-                    facSell.resources.gold.amount += revenueSell;
+                    // Добавляем золото фракции в столицу
+                    if (capitalRegionId) {
+                        addRealItems(World.regions[capitalRegionId].vault_id, 'gold', revenueSell);
+                    }
 
-                    if (qtySell / (regSell.resources[goodSell].amount) > 0.2) {
+                    if (qtySell / (countRealItems(regSell.vault_id, goodSell)) > 0.2) {
                         regSell.markets[goodSell] = Math.max(1, Math.floor(priceSell * 0.85));
                     }
                     feedback = `[Экономика] Фракция ${facSell.name} продала ${qtySell} ${goodSell} в ${regSell.name} за ${revenueSell} з.`;
@@ -9489,18 +9537,25 @@ case 'setEntityBinding':
                     let facility = regInv.facilities[args.facilityType];
                     if (!facility) { feedback = `[ERROR] Здание ${args.facilityType} не найдено.`; break; }
 
+                    // Находим столицу фракции для проверки золота
+                    const capitalRegionId = Object.keys(World.regions).find(rid => World.regions[rid].owner === args.factionId);
+                    let goldAvailable = 0;
+                    if (capitalRegionId) {
+                        goldAvailable = countRealItems(World.regions[capitalRegionId].vault_id, 'gold');
+                    }
+
                     if (args.action === 'repair') {
                         let cost = 500;
-                        if (facInv.resources.gold.amount >= cost) {
-                            facInv.resources.gold.amount -= cost;
+                        if (goldAvailable >= cost) {
+                            consumeRealItems(World.regions[capitalRegionId].vault_id, 'gold', cost);
                             facility.durability = 100;
                             feedback = `[Инвестиции] ${facInv.name} отремонтировала ${args.facilityType} в ${regInv.name}.`;
                             World.gmInterventionHistory.push({ turn: player.stats.turnCount, command: command, args: args, result: "Repaired" });
                         } else feedback = `[ERROR] У ${facInv.name} нет ${cost} з. на ремонт.`;
                     } else if (args.action === 'upgrade') {
                         let cost = (facility.level + 1) * 2000;
-                        if (facInv.resources.gold.amount >= cost) {
-                            facInv.resources.gold.amount -= cost;
+                        if (goldAvailable >= cost) {
+                            consumeRealItems(World.regions[capitalRegionId].vault_id, 'gold', cost);
                             facility.level += 1;
                             feedback = `[Инвестиции] ${facInv.name} улучшила ${args.facilityType} в ${regInv.name} до ур. ${facility.level}.`;
                             World.gmInterventionHistory.push({ turn: player.stats.turnCount, command: command, args: args, result: "Upgraded" });
@@ -9544,9 +9599,27 @@ case 'setEntityBinding':
                     if (!facMil || !regMil) { feedback = "[ERROR] gmRaiseMilitia: Неверные данные."; break; }
                     let drafts = Math.floor(regMil.population * 0.05);
                     regMil.population -= drafts;
-                    facMil.resources.manpower.amount += drafts;
-                    facMil.stability -= 10;
-                    feedback = `[Мобилизация] ${facMil.name} принудительно призвала ${drafts} рекрутов из ${regMil.name}. Стабильность упала!`;
+                    // Вместо абстрактного manpower - физическое изъятие оружия и еды из склада региона для новой армии
+                    const capitalVault = regMil.vault_id;
+                    const weaponsNeeded = Math.floor(drafts * 0.8);
+                    const foodNeeded = Math.floor(drafts * 2);
+                    const weaponsTaken = consumeRealItems(capitalVault, 'weapons', weaponsNeeded);
+                    const breadTaken = consumeRealItems(capitalVault, 'bread', Math.floor(foodNeeded * 0.7));
+                    const meatTaken = consumeRealItems(capitalVault, 'meat', Math.floor(foodNeeded * 0.3));
+                    
+                    // Создаем контейнер ополчения
+                    const militiaChestId = WorkerInventorySystem.createContainer(
+                        "army_supply_chest",
+                        facMil.id,
+                        999999,
+                        1000,
+                        { region_id: args.regionId },
+                        { lock_data: { is_locked: false, difficulty: 10 }, physical_props: { health: 200, flammable: true } }
+                    );
+                    addRealItems(militiaChestId, 'bread', breadTaken);
+                    addRealItems(militiaChestId, 'meat', meatTaken);
+                    
+                    feedback = `[Мобилизация] ${facMil.name} принудительно призвала ${drafts} рекрутов из ${regMil.name}. Изъято ${weaponsTaken} ед. оружия и ${breadTaken + meatTaken} ед. еды.`;
                     World.gmInterventionHistory.push({ turn: player.stats.turnCount, command: command, args: args, result: "Success" });
                     addCalculationMessage(feedback);
                 }
@@ -9558,12 +9631,30 @@ case 'setEntityBinding':
                     let facRum = World.factions[args.factionId];
                     let targetRum = World.factions[args.targetFactionId];
                     let invest = parseInt(args.investmentGold) || 0;
-                    if (!facRum || !targetRum || facRum.resources.gold.amount < invest) { feedback = "[ERROR] gmSpreadRumor: Ошибка слухов или нет денег."; break; }
-                    facRum.resources.gold.amount -= invest;
+                    
+                    // Проверяем наличие физического золота в столице
+                    const capitalRegionId = Object.keys(World.regions).find(rid => World.regions[rid].owner === args.factionId);
+                    let goldAvailable = 0;
+                    if (capitalRegionId) {
+                        goldAvailable = countRealItems(World.regions[capitalRegionId].vault_id, 'gold');
+                    }
+                    
+                    if (!facRum || !targetRum || goldAvailable < invest) { feedback = "[ERROR] gmSpreadRumor: Ошибка слухов или нет золота."; break; }
+                    
+                    // Изъямаем физическое золото из столицы
+                    if (capitalRegionId) {
+                        consumeRealItems(World.regions[capitalRegionId].vault_id, 'gold', invest);
+                    }
+                    
                     let power = Math.max(1, Math.floor(invest / 500));
                     if (args.type === 'slander') {
-                        targetRum.stability -= power;
-                        feedback = `[Слухи] ${facRum.name} распускает грязные слухи о ${targetRum.name}, тратя ${invest} з.`;
+                        // Вместо стабильности - физическое последствие: бунт уничтожает ресурсы цели
+                        const targetCapitalId = Object.keys(World.regions).find(rid => World.regions[rid].owner === args.targetFactionId);
+                        if (targetCapitalId) {
+                            const foodLost = Math.floor(countRealItems(World.regions[targetCapitalId].vault_id, 'bread') * 0.2);
+                            consumeRealItems(World.regions[targetCapitalId].vault_id, 'bread', foodLost);
+                        }
+                        feedback = `[Слухи] ${facRum.name} распускает грязные слухи о ${targetRum.name}, тратя ${invest} з. Враг потерял ${foodLost} ед. еды из-за беспорядков.`;
                     } else {
                         facRum.relations[args.targetFactionId] = Math.min(100, (facRum.relations[args.targetFactionId]||0) + power*2);
                         feedback = `[Слухи] ${facRum.name} улучшает имидж ${targetRum.name}, тратя ${invest} з.`;
@@ -11298,8 +11389,6 @@ function updateWorldSimDebugDisplay() {
             for (let t in f.diplomacy) { if (f.diplomacy[t] === "war" && World.factions[t]) wars.push(World.factions[t].name); }
             let warText = wars.length > 0 ? `<br><span style="color:#e74c3c; font-size:0.85em;">⚔️ Война: ${wars.join(', ')}</span>` : '';
             
-            let stabColor = f.stability > 70 ? '#2ecc71' : (f.stability > 30 ? '#f1c40f' : '#e74c3c');
-            
             // Функция для красивого форматирования больших чисел
             const formatNum = (num) => {
                 if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
@@ -11307,13 +11396,17 @@ function updateWorldSimDebugDisplay() {
                 return num;
             };
 
-            let gold = f.resources.gold ? formatNum(Math.floor(f.resources.gold.amount)) : 0;
-            let manpower = f.resources.manpower ? formatNum(Math.floor(f.resources.manpower.amount)) : 0;
+            // Золото и живая сила из физических запасов
+            const capitalRegionId = Object.keys(World.regions).find(rid => World.regions[rid].owner === fId);
+            let gold = 0;
+            if (capitalRegionId && World.regions[capitalRegionId]?.vault_id) {
+                gold = countRealItems(World.regions[capitalRegionId].vault_id, 'gold');
+            }
+            const manpower = availableManpower(f);
             
             html += `<div class="debug-item">
                      <b style="color:#3498db">${f.name}</b><br>
-                     💰${gold} | 🛡️${manpower}
-                     <div class="debug-bar-bg"><div class="debug-bar-fg" style="width:${f.stability}%; background:${stabColor}"></div></div>
+                     💰${formatNum(gold)} | 🛡️${formatNum(manpower)}
                      ${warText}
                      </div>`;
         }
@@ -11500,10 +11593,18 @@ function checkRulerDeaths() {
                 delete World.rulers[r.heir]; // Удаляем старую запись наследника
             } else {
                 generateWorldNews(`КРИЗИС: ${r.name} мертв, и наследников нет! Фракция погружается в хаос.`, "global", 5, 'disaster');
-                World.factions[r.factionId].stability -= 40;
+                // Вместо стабильности - физическое последствие: бунт уничтожает ресурсы столицы
+                const capitalRegionId = Object.keys(World.regions).find(rid => World.regions[rid].owner === r.factionId);
+                if (capitalRegionId) {
+                    const capitalVault = World.regions[capitalRegionId].vault_id;
+                    const weaponsLost = Math.floor(countRealItems(capitalVault, 'weapons') * 0.4);
+                    const goldLost = Math.floor(countRealItems(capitalVault, 'gold') * 0.3);
+                    consumeRealItems(capitalVault, 'weapons', weaponsLost);
+                    consumeRealItems(capitalVault, 'gold', goldLost);
+                }
             }
         } else if (r.alive) {
-            if (Math.random() < 0.02) r.health -= 1; // Естественное старение
+            // Правитель больше не теряет здоровье от старения в main thread - это обрабатывается в world_worker.js
         }
     }
 }
